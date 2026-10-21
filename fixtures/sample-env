@@ -1,0 +1,6 @@
+export DEMO_API_KEY=demo-key-ABCDEFG1234567890
+export HARMLESS_VAR=not-a-secret
+export DEPLOY_GITHUB_TOKEN=ghk_FAKETOKEN0000FAKE
+export STRIPE_LIVE_KEY=sk_live_FAKEKEY1234567890
+# comment line, should be ignored
+export SESSION_COOKIE=session=FAKECOOKIEVALUE12345

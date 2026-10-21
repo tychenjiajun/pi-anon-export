@@ -1,0 +1,5 @@
+node_modules/
+dist/
+*.tsbuildinfo
+pi-anon-export-*/
+.DS_Store
