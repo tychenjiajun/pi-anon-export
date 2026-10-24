@@ -49,6 +49,11 @@
 //   redacted (escape char preserved). Trade-off: contrived strings like
 //   `dir\name@foo.com` get over-redacted to `dir\n` + placeholder — we accept
 //   false positives to guarantee no email-shaped text leaks.
+// - `isRedactedSecretValue` also recognises OUR markers (`[REDACTED_<NAME>]`,
+//   case-insensitive). Without this, a known literal secret that was already
+//   replaced inside a credential URL was re-redacted into an opaque
+//   `redacted_secret_…` value, losing the "which secret was here" information.
+//   The guard only ever prevents double-redaction of an already-redacted value.
 
 import { createHash } from "node:crypto";
 
@@ -674,7 +679,10 @@ function isEmptySecretValue(value: string): boolean {
 }
 
 function isRedactedSecretValue(value: string): boolean {
-	return startsWithAny(stripBothQuotes(value), ["redacted_", "<redacted", "[redacted"]);
+	// Deviation: compared case-insensitively so our own `[REDACTED_<NAME>]`
+	// markers count as already-redacted (see the header notes).
+	const lowered = stripBothQuotes(value).toLowerCase();
+	return startsWithAny(lowered, ["redacted_", "<redacted", "[redacted"]);
 }
 
 function isPlaceholderSecretValue(value: string): boolean {
@@ -684,11 +692,35 @@ function isPlaceholderSecretValue(value: string): boolean {
 
 // ---------------------------------------------------------------------------
 // Base64 media detection (ports of _looks_like_base64_* / _redact_base64_media).
+//
+// Deviation from the Python source: the media-type lookup also accepts the
+// camelCase keys pi writes (`mimeType`, `mediaType`). Without this, the ported
+// media branch only ever fired for snake_case payloads, i.e. it was silently
+// inert for real pi sessions.
+//
+// NOTE for the export pipeline: `lib/redact.ts` owns the image policy for
+// /anon-export (--no-images → `[IMAGE_REMOVED]`, otherwise kept byte-exact).
+// It intercepts every long `data`/`base64` string before the anonymizer sees
+// it, so this branch never rewrites exported images — it is only reachable
+// when the anonymizer is used standalone. Do not "fix" that by removing the
+// interception: replacing payloads there would silently discard images the
+// user asked to keep.
 // ---------------------------------------------------------------------------
+
+/** Media-type/MIME type keys seen in practice (snake_case upstream, camelCase from pi). */
+const MEDIA_TYPE_KEYS = ["media_type", "mime_type", "mediaType", "mimeType"] as const;
+
+function declaredMediaType(value: Record<string, unknown>): string | null {
+	for (const key of MEDIA_TYPE_KEYS) {
+		const candidate = value[key];
+		if (typeof candidate === "string" && candidate.length > 0) return candidate;
+	}
+	return null;
+}
 
 function looksLikeBase64MediaSource(value: Record<string, unknown>): boolean {
 	const sourceType = value["type"];
-	const mediaType = value["media_type"] ?? value["mime_type"];
+	const mediaType = declaredMediaType(value);
 	return (
 		((typeof sourceType === "string" && sourceType.toLowerCase() === "base64") ||
 			(typeof mediaType === "string" &&
@@ -767,8 +799,7 @@ class TraceAnonymizer implements Anonymizer {
 		let mediaReplacement: { readonly type: string; readonly data: string } | null = null;
 		const mediaData = value["data"];
 		if (shouldRedactBase64Data && typeof mediaData === "string" && looksLikeBase64Blob(mediaData)) {
-			const mediaType = value["media_type"] ?? value["mime_type"];
-			mediaReplacement = this.redactBase64Media(typeof mediaType === "string" ? mediaType : null);
+			mediaReplacement = this.redactBase64Media(declaredMediaType(value));
 		}
 		const role = value["role"];
 		const isAssistantMessage = typeof role === "string" && role.toLowerCase() === "assistant";
@@ -777,7 +808,7 @@ class TraceAnonymizer implements Anonymizer {
 			const redactedKey = this.anonymizeValue(key) as string;
 			if (mediaReplacement !== null && key === "data") {
 				redacted[redactedKey] = mediaReplacement.data;
-			} else if (mediaReplacement !== null && (key === "media_type" || key === "mime_type")) {
+			} else if (mediaReplacement !== null && (MEDIA_TYPE_KEYS as readonly string[]).includes(key)) {
 				redacted[redactedKey] = mediaReplacement.type;
 			} else if (isAssistantMessage && (key === "content" || key === "reasoning_content" || key === "thinking")) {
 				// Assistant responses can echo credentials and personal data
@@ -791,7 +822,7 @@ class TraceAnonymizer implements Anonymizer {
 				redacted[redactedKey] = this.anonymizeValue(item);
 			}
 		}
-		if (mediaReplacement !== null && !("media_type" in value) && !("mime_type" in value)) {
+		if (mediaReplacement !== null && declaredMediaType(value) === null) {
 			redacted["media_type"] = mediaReplacement.type;
 		}
 		return redacted;

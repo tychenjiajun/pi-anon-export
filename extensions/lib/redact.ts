@@ -3,19 +3,20 @@
 // For each JSONL line:
 //   1. JSON.parse — unparseable lines are DROPPED and counted (fail-safe:
 //      broken output is never emitted verbatim).
-//   2. Structural pass — image content blocks (a string under a `data` key
-//      longer than 256 chars) are replaced with "[IMAGE_REMOVED]" when
-//      removeImages is set (--no-images), otherwise kept but counted for
-//      manual review.
-//   3. Literal secret replacement — every occurrence of a discovered secret
-//      value becomes [REDACTED_<NAME>].
-//   4. At level "full", every leaf value is additionally passed through the
-//      shared Anonymizer (createAnonymizer(), extensions/lib/anonymize.ts).
+//   2. Structural pass — image content blocks (a string under a `data` /
+//      `base64` key longer than 256 chars) are replaced with "[IMAGE_REMOVED]"
+//      when removeImages is set (--no-images), otherwise kept but counted for
+//      manual review. Kept images are never passed to the anonymizer: base64
+//      must stay byte-exact or the image is destroyed.
+//   3. Literal secret replacement (single pass, longest value first).
+//   4. At level "full", every remaining leaf value is additionally passed
+//      through the shared Anonymizer (createAnonymizer(), lib/anonymize.ts).
 //
-// Output is re-serialized JSON. Returns { lines, counts }.
+// Output is re-serialized JSON. Returns { lines, counts } where `counts` are
+// DELTAS for this call even when a shared anonymizer is reused across files.
 
 import { createAnonymizer, type Anonymizer } from "./anonymize.ts";
-import type { SecretEntry } from "./secrets.ts";
+import { createSecretMatcher, type SecretEntry } from "./secrets.ts";
 
 export type RedactionLevel = "fast" | "full";
 
@@ -28,7 +29,7 @@ export interface RedactionCounts {
 	images_flagged: number;
 	/** Literal secret occurrences replaced with [REDACTED_<NAME>]. */
 	secret_replacements: number;
-	/** Additional counts accumulated by the anonymizer (full level). */
+	/** Additional counts accumulated by the anonymizer, for THIS file only. */
 	anonymizer: Record<string, number>;
 }
 
@@ -53,16 +54,6 @@ export function mergeCounts(target: RedactionCounts, source: RedactionCounts): R
 	return target;
 }
 
-export function totalRedactions(counts: RedactionCounts): number {
-	const anonymizerTotal = Object.values(counts.anonymizer).reduce((a, b) => a + b, 0);
-	return (
-		counts.dropped_lines +
-		counts.images_removed +
-		counts.secret_replacements +
-		anonymizerTotal
-	);
-}
-
 export interface RedactOptions {
 	/** "full" applies the value anonymizer; "fast" only does secrets/images/drop. */
 	level: RedactionLevel;
@@ -72,20 +63,24 @@ export interface RedactOptions {
 	secrets: readonly SecretEntry[];
 	/**
 	 * Anonymizer instance to use at level "full". Create ONE per export run so
-	 * the same value maps consistently across all files. When omitted a fresh
-	 * instance is created (fine for single-file runs / tests).
+	 * the same value maps consistently across all files. Counts returned by
+	 * each call are per-file deltas, not the instance's lifetime totals.
 	 */
 	anonymizer?: Anonymizer;
 }
 
-/** Threshold above which a `data` string is treated as an embedded image. */
+/** Threshold above which a `data`/`base64` string is treated as an embedded image. */
 export const IMAGE_DATA_MIN_LENGTH = 256;
+
+/** Object keys whose long string values are embedded media payloads. */
+const IMAGE_DATA_KEYS: ReadonlySet<string> = new Set(["data", "base64"]);
 
 const IMAGE_REPLACEMENT = "[IMAGE_REMOVED]";
 
 interface WalkState {
 	options: RedactOptions;
 	counts: RedactionCounts;
+	redactSecrets: ReturnType<typeof createSecretMatcher>;
 }
 
 /**
@@ -95,22 +90,22 @@ interface WalkState {
  */
 function walkValue(value: unknown, parentKey: string | undefined, state: WalkState): unknown {
 	if (typeof value === "string") {
-		if (parentKey === "data" && value.length > IMAGE_DATA_MIN_LENGTH) {
+		if (parentKey !== undefined && IMAGE_DATA_KEYS.has(parentKey) && value.length > IMAGE_DATA_MIN_LENGTH) {
 			if (state.options.removeImages) {
 				state.counts.images_removed += 1;
 				return IMAGE_REPLACEMENT;
 			}
+			// Kept by request. Deliberately untouched: any rewrite (including the
+			// anonymizer) would corrupt the base64 payload.
 			state.counts.images_flagged += 1;
 			return value;
 		}
 
 		let out = value;
-		for (const secret of state.options.secrets) {
-			if (secret.value && out.includes(secret.value)) {
-				const occurrences = out.split(secret.value).length - 1;
-				state.counts.secret_replacements += occurrences;
-				out = out.split(secret.value).join(secret.replacement);
-			}
+		if (state.redactSecrets) {
+			out = state.redactSecrets.replace(out, () => {
+				state.counts.secret_replacements += 1;
+			});
 		}
 
 		if (state.options.level === "full" && state.options.anonymizer) {
@@ -156,9 +151,15 @@ export interface RedactResult {
 export function redactSessionJsonl(content: string, options: RedactOptions): RedactResult {
 	const anonymizer =
 		options.level === "full" ? (options.anonymizer ?? createAnonymizer()) : undefined;
+	// The anonymizer instance is shared across files by design; snapshot its
+	// lifetime counts so this call can report a delta (and so per-file manifest
+	// counts stay per-file).
+	const baseline: Record<string, number> = anonymizer ? { ...anonymizer.counts } : {};
+
 	const state: WalkState = {
 		options: { ...options, anonymizer },
 		counts: emptyCounts(),
+		redactSecrets: createSecretMatcher(options.secrets),
 	};
 
 	const lines: string[] = [];
@@ -191,8 +192,43 @@ export function redactSessionJsonl(content: string, options: RedactOptions): Red
 	}
 
 	if (anonymizer) {
-		state.counts.anonymizer = { ...anonymizer.counts };
+		for (const [key, value] of Object.entries(anonymizer.counts)) {
+			const delta = value - (baseline[key] ?? 0);
+			if (delta !== 0) state.counts.anonymizer[key] = delta;
+		}
 	}
 
 	return { lines, counts: state.counts };
+}
+
+/**
+ * Second-pass verification: count how many known secret literals survive in
+ * the emitted content. Anything above zero means the export must not be shared.
+ *
+ * Redacted output is JSON, so a secret containing `"`, `\\` or a newline only
+ * appears in its escaped form (`JSON.stringify` applies `\\"`, `\\\\`, `\\n`).
+ * Both forms are matched in ONE combined pass (same matcher as the redaction
+ * step), so verification stays linear in the content size no matter how many
+ * secrets are configured.
+ */
+export function countResidualSecrets(content: string, secrets: readonly SecretEntry[]): number {
+	const needles = new Set<string>();
+	for (const secret of secrets) {
+		if (secret.value.length === 0) continue;
+		needles.add(secret.value);
+		const escaped = JSON.stringify(secret.value).slice(1, -1);
+		if (escaped.length > 0) needles.add(escaped);
+	}
+	if (needles.size === 0) return 0;
+
+	const matcher = createSecretMatcher(
+		[...needles].map((value) => ({ name: "residual", value, replacement: "" })),
+	);
+	if (!matcher) return 0;
+
+	let found = 0;
+	matcher.replace(content, () => {
+		found += 1;
+	});
+	return found;
 }

@@ -1,13 +1,15 @@
 // Session location and safe reading.
 //
-// Pi stores sessions as JSONL under (by default) ~/.pi/agent/sessions/--<path>--/
-// where <path> is the cwd with the leading slash removed and "/", "\", ":"
+// Pi stores sessions as JSONL under <agentDir>/sessions/--<path>--/ where
+// <path> is the cwd with the leading slash removed and "/", "\", ":"
 // replaced by "-". Storage can be overridden by (highest precedence first):
 // --session-dir, PI_CODING_AGENT_SESSION_DIR, the sessionDir setting.
 //
 // Inside a running pi, ctx.sessionManager.getSessionDir() already reflects all
 // of those, so the extension prefers it and only falls back to resolving
-// precedence here (or when getSessionDir is unavailable).
+// precedence here (or when getSessionDir is unavailable). The agent dir itself
+// is passed in by the caller (pi's getAgentDir(), which honors
+// PI_CODING_AGENT_DIR) so this module never diverges from pi's own default.
 
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -22,9 +24,14 @@ export function encodeSessionDirName(cwd: string): string {
 	return `--${resolved.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
 }
 
-/** Default session directory for a cwd: ~/.pi/agent/sessions/--<path>-- */
-export function defaultSessionDir(cwd: string): string {
-	return join(homedir(), ".pi", "agent", "sessions", encodeSessionDirName(cwd));
+/** Fallback agent dir — matches pi's default when PI_CODING_AGENT_DIR is unset. */
+export function defaultAgentDir(): string {
+	return join(homedir(), ".pi", "agent");
+}
+
+/** Default session directory for a cwd: <agentDir>/sessions/--<path>-- */
+export function defaultSessionDir(cwd: string, agentDir: string = defaultAgentDir()): string {
+	return join(agentDir, "sessions", encodeSessionDirName(cwd));
 }
 
 export interface ResolvedSessionDir {
@@ -38,22 +45,27 @@ export interface ResolveSessionDirOptions {
 	sessionManagerDir?: string | undefined;
 	/** sessionDir from pi settings, if available. Relative paths resolve from cwd. */
 	settingsDir?: string | undefined;
+	/** pi's agent dir (getAgentDir()); defaults to ~/.pi/agent. */
+	agentDir?: string | undefined;
 	/** Env to read (defaults to process.env). Injectable for tests. */
 	env?: NodeJS.ProcessEnv;
 }
 
-/** Resolve the session directory honoring env var and settings fallbacks. */
+/**
+ * Resolve the session directory honoring env var and settings fallbacks.
+ * Every relative path is resolved against `cwd` (never against process.cwd()).
+ */
 export function resolveSessionDir(options: ResolveSessionDirOptions): ResolvedSessionDir {
-	const { cwd, sessionManagerDir, settingsDir } = options;
+	const { cwd, sessionManagerDir, settingsDir, agentDir } = options;
 	const env = options.env ?? process.env;
 
 	if (sessionManagerDir && sessionManagerDir.trim().length > 0) {
-		return { dir: resolve(sessionManagerDir), source: "session-manager" };
+		return { dir: resolve(cwd, sessionManagerDir), source: "session-manager" };
 	}
 
 	const envDir = env[SESSION_ENV_VAR];
 	if (envDir && envDir.trim().length > 0) {
-		return { dir: resolve(envDir), source: "env" };
+		return { dir: resolve(cwd, envDir), source: "env" };
 	}
 
 	if (settingsDir && settingsDir.trim().length > 0) {
@@ -61,7 +73,7 @@ export function resolveSessionDir(options: ResolveSessionDirOptions): ResolvedSe
 		return { dir: resolve(cwd, settingsDir), source: "settings" };
 	}
 
-	return { dir: defaultSessionDir(cwd), source: "default" };
+	return { dir: defaultSessionDir(cwd, agentDir), source: "default" };
 }
 
 export interface SkippedFile {
@@ -90,27 +102,26 @@ export function listSessionFiles(dir: string): SessionFileList {
 		return { files, skipped };
 	}
 
+	// Stat once per entry (the previous comparator re-stat'ed inside sort()).
+	const candidates: Array<{ path: string; mtimeMs: number }> = [];
 	for (const entry of entries) {
 		if (!entry.endsWith(".jsonl")) continue;
 		const path = join(dir, entry);
 		try {
 			const stat = statSync(path);
 			if (!stat.isFile()) continue;
-			files.push(path);
+			candidates.push({ path, mtimeMs: stat.mtimeMs });
 		} catch (error) {
 			skipped.push({ path, error: String(error) });
 		}
 	}
 
-	files.sort((a, b) => {
-		try {
-			return statSync(b).mtimeMs - statSync(a).mtimeMs;
-		} catch {
-			return a < b ? -1 : 1;
-		}
+	candidates.sort((a, b) => {
+		if (b.mtimeMs !== a.mtimeMs) return b.mtimeMs - a.mtimeMs;
+		return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
 	});
 
-	return { files, skipped };
+	return { files: candidates.map((candidate) => candidate.path), skipped };
 }
 
 export type SafeReadResult =

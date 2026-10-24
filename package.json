@@ -3,6 +3,15 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Pi extension that exports sessions as anonymized JSONL: redacts literal secrets pulled from your env files, strips or flags embedded images, drops unparseable lines, and optionally zips every session of the current project. Fully offline — nothing ever leaves your machine.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tychenjiajun/pi-anon-export.git"
+  },
+  "homepage": "https://github.com/tychenjiajun/pi-anon-export#readme",
+  "bugs": {
+    "url": "https://github.com/tychenjiajun/pi-anon-export/issues"
+  },
+  "author": "Jiajun Chen <tychenjiajun@live.cn>",
   "keywords": [
     "pi-package",
     "pi-extension",
@@ -34,7 +43,7 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
-    "smoke": "node scripts/smoke.ts",
+    "smoke": "node scripts/smoke.ts && node scripts/anonymize-smoke.ts",
     "test": "npm run check && npm run smoke"
   },
   "dependencies": {

@@ -1,3 +1,9 @@
+# Single-package repo (no workspace members).
+#
+# pnpm 12 refuses to install when a dependency's build script is neither
+# allowed nor denied. These two arrive through pi's dependency tree and are
+# never needed at runtime by this extension, so they are explicitly denied
+# rather than left to "run pnpm approve-builds".
 allowBuilds:
   '@google/genai': false
   protobufjs: false
