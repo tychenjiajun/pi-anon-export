@@ -5,6 +5,8 @@
 [![license](https://img.shields.io/badge/license-MIT%20%2B%20Apache--2.0-blue)](LICENSE)
 [![pi extension](https://img.shields.io/badge/pi-extension-7c3aed)](https://pi.dev/packages/pi-anon-export)
 
+English | [简体中文](https://github.com/tychenjiajun/pi-anon-export/blob/main/docs/README.zh-CN.md)
+
 **A [pi](https://pi.dev) extension that exports your agent sessions as anonymized JSONL** — locally, with nothing ever leaving your machine. Use it when you want to share a session transcript (for a bug report, a colleague, or a public gist) without leaking API keys, tokens, cookies, emails, or embedded screenshots.
 
 ![pi-anon-export: a session file before and after redaction](https://raw.githubusercontent.com/tychenjiajun/pi-anon-export/main/assets/preview.png)
@@ -186,6 +188,7 @@ The smoke tests are hermetic: `--env-file` points at `fixtures/`, and every expo
 ## Links
 
 - Package page: <https://pi.dev/packages/pi-anon-export>
+- 中文说明 (Chinese README): <https://github.com/tychenjiajun/pi-anon-export/blob/main/docs/README.zh-CN.md>
 - pi packages documentation: <https://pi.dev/docs/latest/packages>
 - Issues and bug reports: <https://github.com/tychenjiajun/pi-anon-export/issues>
 - The upstream anonymizer this ports: <https://github.com/TeichAI/teich>
