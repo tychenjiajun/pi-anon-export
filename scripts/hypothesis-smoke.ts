@@ -728,18 +728,20 @@ interface FakeCommand {
 	handler: (args: string, ctx: unknown) => Promise<void>;
 }
 
-function registerCommand(): FakeCommand {
+function registerCommands(): { command: FakeCommand; zipCommand: FakeCommand } {
 	const commands: FakeCommand[] = [];
 	anonExportExtension({
 		registerCommand: (_name: string, options: FakeCommand) => commands.push(options),
 		getSettings: () => ({}),
 	} as unknown as Parameters<typeof anonExportExtension>[0]);
 	const command = commands[0];
+	const zipCommand = commands[1];
 	assert.ok(command);
-	return command;
+	assert.ok(zipCommand);
+	return { command, zipCommand };
 }
 
-const command = registerCommand();
+const { command, zipCommand } = registerCommands();
 
 function fakeCtx(sessionDir: string, cwd: string, sessionFile?: string): unknown {
 	return {
@@ -805,7 +807,7 @@ await ok("P10b: a partial export stays exit 0 but reports the skipped file", asy
 		writeFileSync(locked, "{}\n", "utf-8");
 		chmodSync(locked, 0o000);
 
-		await command.handler(`zip --env-file ${join(cwd.path, "empty-env")}`, fakeCtx(tmp.path, cwd.path));
+		await zipCommand.handler(`--env-file ${join(cwd.path, "empty-env")}`, fakeCtx(tmp.path, cwd.path));
 		const report = stderr.read();
 		assert.ok(report.includes("Exported 1 session(s)"), report);
 		assert.ok(report.includes("Skipped 1 unreadable or empty file(s)."), report);
@@ -1005,7 +1007,7 @@ await ok("P2b: discovery lists what it will export, and the count matches the ar
 		mkdirSync(join(tmp.path, "nested"));
 		writeFileSync(join(tmp.path, "nested", "deep.jsonl"), sessionLine({ deep: 3 }), "utf-8");
 
-		await command.handler(`zip --env-file ${join(cwd.path, "empty-env")}`, fakeCtx(tmp.path, cwd.path));
+		await zipCommand.handler(`--env-file ${join(cwd.path, "empty-env")}`, fakeCtx(tmp.path, cwd.path));
 		assert.ok(stderr.read().includes("Exported 2 session(s)"), stderr.read());
 
 		const archives = readdirSync(cwd.path).filter((name) => name.endsWith(".zip"));

@@ -3,17 +3,18 @@
 // /anon-export [path]      export the current session, anonymized. The output
 //                         format follows /export: a `.jsonl` path writes JSONL,
 //                         any other path (or no path) writes HTML.
-// /anon-export zip        export every session of the current working
+// /anon-export-zip        export every session of the current working
 //                         directory's session folder, zipped with a manifest
 //
-// Flags (both modes):
+// Flags (both commands):
 //   --no-images                 strip embedded image data blocks
 //   --level fast|full           redaction depth (default: full)
 //   --pii conservative|aggressive
 //                               add name/street-address patterns (full level)
-//   --out <dir>                 legacy/batch mode: one JSONL file per session
-//                               in <dir> (without it, [path] follows /export: an
-//                               exact path, or <APP_NAME>-session-<session>.html)
+//   --out <dir>                 single-session JSONL directory, or the zip
+//                               output directory (without it, [path] follows
+//                               /export: an exact path, or
+//                               <APP_NAME>-session-<session>.html)
 //   --secret <lit|file>         extra literal secret(s); a value that is a
 //                               readable file path is read one secret per line
 //   --env-file <path>           env file(s) to scan INSTEAD of the default shell
@@ -216,38 +217,38 @@ function currentThemeName(ctx: ExtensionCommandContext, pi: ExtensionAPI): strin
 }
 
 export const anonExportExtension: ExtensionFactory = (pi: ExtensionAPI) => {
-	pi.registerCommand("anon-export", {
-		description:
-			"Export the current session (HTML or JSONL, like /export) or all cwd sessions with 'zip', anonymized locally",
-		getArgumentCompletions: (prefix) => {
-			// Complete the LAST token only, but keep what was already typed: the
-			// previous version compared the whole prefix, so nothing completed after
-			// the first word (`zip --` returned null).
-			const flags = ["zip", "--no-images", "--level", "--pii", "--out", "--secret", "--env-file"];
-			const values: Record<string, readonly string[]> = {
-				"--level": ["fast", "full"],
-				"--pii": ["conservative", "aggressive"],
-			};
-			const match = /^(.*\s)?(\S*)$/.exec(prefix);
-			const head = match?.[1] ?? "";
-			const last = match?.[2] ?? "";
-			const previous = head.trim().split(/\s+/).filter(Boolean).pop() ?? "";
-			const pool =
-				Object.hasOwn(values, previous) && (last.length === 0 || !last.startsWith("-"))
-					? (values[previous] ?? [])
-					: flags;
-			const filtered = pool.filter((candidate) => candidate.startsWith(last));
-			return filtered.length > 0
-				? filtered.map((candidate) => ({ value: `${head}${candidate}`, label: candidate }))
-				: null;
-		},
-		handler: async (rawArgs: string, ctx: ExtensionCommandContext) => {
-			const parsed = parseAnonExportArgs(rawArgs);
-			if ("error" in parsed) {
-				fail(ctx, parsed.error);
-				return;
-			}
-			const args = parsed;
+	// Complete the LAST token only, but keep what was already typed.
+	const getArgumentCompletions = (prefix: string) => {
+		const flags = ["--no-images", "--level", "--pii", "--out", "--secret", "--env-file"];
+		const values: Record<string, readonly string[]> = {
+			"--level": ["fast", "full"],
+			"--pii": ["conservative", "aggressive"],
+		};
+		const match = /^(.*\s)?(\S*)$/.exec(prefix);
+		const head = match?.[1] ?? "";
+		const last = match?.[2] ?? "";
+		const previous = head.trim().split(/\s+/).filter(Boolean).pop() ?? "";
+		const pool =
+			Object.hasOwn(values, previous) && (last.length === 0 || !last.startsWith("-"))
+				? (values[previous] ?? [])
+				: flags;
+		const filtered = pool.filter((candidate) => candidate.startsWith(last));
+		return filtered.length > 0
+			? filtered.map((candidate) => ({ value: `${head}${candidate}`, label: candidate }))
+			: null;
+	};
+
+	const run = async (
+		rawArgs: string,
+		ctx: ExtensionCommandContext,
+		mode: "current" | "zip",
+	) => {
+		const parsed = parseAnonExportArgs(rawArgs, mode);
+		if ("error" in parsed) {
+			fail(ctx, parsed.error);
+			return;
+		}
+		const args = parsed;
 
 			// --- Locate sessions -------------------------------------------------
 			// getSessionDir()/getSessionFile() already honor --session-dir,
@@ -770,7 +771,18 @@ export const anonExportExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 				return;
 			}
 			notify(ctx, lines.join("\n"), needsAttention ? "warning" : "info");
-		},
+	};
+
+	pi.registerCommand("anon-export", {
+		description: "Export the current session (HTML or JSONL, like /export), anonymized, locally",
+		getArgumentCompletions,
+		handler: (rawArgs: string, ctx: ExtensionCommandContext) => run(rawArgs, ctx, "current"),
+	});
+
+	pi.registerCommand("anon-export-zip", {
+		description: "Export ALL sessions of the cwd's session folder, anonymized, into one zip",
+		getArgumentCompletions,
+		handler: (rawArgs: string, ctx: ExtensionCommandContext) => run(rawArgs, ctx, "zip"),
 	});
 };
 

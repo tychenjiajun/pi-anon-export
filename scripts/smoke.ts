@@ -395,7 +395,8 @@ await ok("args: defaults", () => {
 
 await ok("args: all flags, including --flag=value and repeated values", () => {
 	const all = parseAnonExportArgs(
-		'zip --no-images --level=full --pii=aggressive --out /tmp/x --secret "lit with spaces" --secret=/path/f --env-file a --env-file=b',
+		'--no-images --level=full --pii=aggressive --out /tmp/x --secret "lit with spaces" --secret=/path/f --env-file a --env-file=b',
+		"zip",
 	);
 	assert.ok(!("error" in all));
 	assert.equal(all.mode, "zip");
@@ -443,20 +444,23 @@ await ok("args: a positional path is the /export-style output target", () => {
 	assert.equal(jsonl.path, "share.jsonl");
 	assert.equal(jsonl.out, undefined);
 
-	const quotedZip = parseAnonExportArgs('"zip"');
-	assert.ok(!("error" in quotedZip));
-	assert.equal(quotedZip.path, "zip");
-	assert.equal(quotedZip.mode, "current");
+	// `zip` is no longer reserved on /anon-export: it is an ordinary filename,
+	// exactly like /export. The dedicated command handles the whole folder.
+	const zipPath = parseAnonExportArgs("zip");
+	assert.ok(!("error" in zipPath));
+	assert.equal(zipPath.path, "zip");
+	assert.equal(zipPath.mode, "current");
 
 	assert.ok("error" in parseAnonExportArgs("a.jsonl b.jsonl"));
-	assert.ok("error" in parseAnonExportArgs("zip a.jsonl"));
+	assert.ok("error" in parseAnonExportArgs("a.jsonl", "zip"));
 	assert.ok("error" in parseAnonExportArgs("a.jsonl --out /tmp/out"));
 });
 
-await ok("args: zip is recognized after other flags", () => {
-	const parsed = parseAnonExportArgs("--level fast zip");
+await ok("args: the zip command rejects paths and defaults to zip mode", () => {
+	const parsed = parseAnonExportArgs("--level fast", "zip");
 	assert.ok(!("error" in parsed));
 	assert.equal(parsed.mode, "zip");
+	assert.equal(parsed.path, undefined);
 });
 
 await ok("paths: ~ is expanded but ~user is left alone", () => {
@@ -742,21 +746,26 @@ interface FakeCtxOptions {
 	hasUI?: boolean;
 }
 
-function registerCommand(): FakeCommand {
+function registerCommands(): { command: FakeCommand; zipCommand: FakeCommand } {
+	const names: string[] = [];
 	const commands: FakeCommand[] = [];
 	const fakePi = {
-		registerCommand: (_name: string, options: FakeCommand) => {
+		registerCommand: (name: string, options: FakeCommand) => {
+			names.push(name);
 			commands.push(options);
 		},
 		getSettings: () => ({}),
 	};
 	anonExportExtension(fakePi as unknown as Parameters<typeof anonExportExtension>[0]);
+	assert.deepEqual(names, ["anon-export", "anon-export-zip"]);
 	const command = commands[0];
-	assert.ok(command, "extension must register exactly one command");
-	return command;
+	const zipCommand = commands[1];
+	assert.ok(command, "extension must register /anon-export");
+	assert.ok(zipCommand, "extension must register /anon-export-zip");
+	return { command, zipCommand };
 }
 
-const command = registerCommand();
+const { command, zipCommand } = registerCommands();
 
 function fakeCtx(options: FakeCtxOptions): { ctx: unknown; notices: Array<{ message: string; type: string }> } {
 	const notices: Array<{ message: string; type: string }> = [];
@@ -821,7 +830,7 @@ await ok("e2e: zip mode writes one timestamped archive in the cwd with a manifes
 		mkdirSync(join(cwd.path, ".git"));
 
 		const { ctx } = fakeCtx({ cwd: cwd.path, sessionDir: sessions.path });
-		await command.handler(`zip --no-images --env-file ${fixtureEnv}`, ctx);
+		await zipCommand.handler(`--no-images --env-file ${fixtureEnv}`, ctx);
 
 		const report = stderr.read();
 		assert.ok(report.includes("Exported 2 session(s)"), report);
@@ -1150,7 +1159,7 @@ await ok("e2e: a zip that fails verification is renamed -UNSAFE.zip", async () =
 		writeFileSync(join(sessions.path, "clean.jsonl"), sessionLine("nothing to see"), "utf-8");
 
 		const { ctx } = fakeCtx({ cwd: cwd.path, sessionDir: sessions.path });
-		await command.handler(`zip --env-file ${fixtureEnv}`, ctx);
+		await zipCommand.handler(`--env-file ${fixtureEnv}`, ctx);
 
 		const report = stderr.read();
 		assert.ok(report.includes("VERIFICATION FAILED"), report);
@@ -1182,7 +1191,7 @@ await ok("e2e: errors notify instead of throwing, and fail an unattended run", a
 	const previousExitCode = process.exitCode;
 	try {
 		const { ctx } = fakeCtx({ cwd: empty.path, sessionDir: empty.path });
-		await command.handler("zip", ctx);
+		await zipCommand.handler("", ctx);
 		assert.ok(stderr.read().includes("No *.jsonl sessions found"), stderr.read());
 		assert.equal(process.exitCode, 1, "a failed export must not exit 0");
 
@@ -1206,7 +1215,7 @@ await ok("e2e: a TUI run reports errors without touching the process exit code",
 	const previousExitCode = process.exitCode;
 	try {
 		const { ctx, notices } = fakeCtx({ cwd: empty.path, sessionDir: empty.path, hasUI: true });
-		await command.handler("zip", ctx);
+		await zipCommand.handler("", ctx);
 		assert.equal(notices.length, 1);
 		assert.equal(notices[0]?.type, "error");
 		assert.equal(process.exitCode, previousExitCode, "the TUI must not set the process exit code");
@@ -1221,12 +1230,14 @@ await ok("e2e: a TUI run reports errors without touching the process exit code",
 await ok("e2e: argument completions are offered", () => {
 	const completions = command.getArgumentCompletions?.("");
 	assert.ok(completions && completions.length > 0);
-	assert.ok(completions.some((item) => item.value === "zip"));
+	assert.ok(completions.some((item) => item.value === "--level"));
+	assert.ok(!completions.some((item) => item.value === "zip"), "zip is a command now, not an argument");
+	assert.ok(zipCommand.getArgumentCompletions?.("")?.some((item) => item.value === "--out"));
 	assert.equal(command.getArgumentCompletions?.("--zzz"), null);
 
 	// Later tokens complete too, keeping what was already typed.
-	const afterZip = command.getArgumentCompletions?.("zip --l");
-	assert.ok(afterZip?.some((item) => item.value === "zip --level"), JSON.stringify(afterZip));
+	const levelFlag = command.getArgumentCompletions?.("--l");
+	assert.ok(levelFlag?.some((item) => item.value === "--level"), JSON.stringify(levelFlag));
 	const levelValue = command.getArgumentCompletions?.("--level f");
 	assert.ok(levelValue?.some((item) => item.value === "--level fast"), JSON.stringify(levelValue));
 });

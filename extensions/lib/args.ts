@@ -37,7 +37,7 @@ export interface AnonExportArgs {
 }
 
 export const USAGE =
-	"/anon-export [path] [--no-images] [--level fast|full] [--pii conservative|aggressive] [--secret <literal|file>] [--env-file <path>]\n  /anon-export zip [--out <dir>] [flags]\n  /anon-export --out <dir> [flags]  (JSONL in <dir>, one file per session)";
+	"/anon-export [path] [--no-images] [--level fast|full] [--pii conservative|aggressive] [--secret <literal|file>] [--env-file <path>]\n  /anon-export-zip [--no-images] [--level fast|full] [--pii conservative|aggressive] [--out <dir>] [--secret <literal|file>] [--env-file <path>]";
 
 const VALUE_FLAGS = new Set(["--level", "--pii", "--out", "--secret", "--env-file"]);
 
@@ -163,13 +163,16 @@ function takeValue(
 }
 
 /** Parse command arguments. Returns an error message for invalid input. */
-export function parseAnonExportArgs(raw: string): AnonExportArgs | { error: string } {
+export function parseAnonExportArgs(
+	raw: string,
+	mode: "current" | "zip" = "current",
+): AnonExportArgs | { error: string } {
 	const tokenized = tokenizeArgTokens(raw);
 	if ("error" in tokenized) return tokenized;
 	const tokens = tokenized;
 
 	const args: AnonExportArgs = {
-		mode: "current",
+		mode,
 		removeImages: false,
 		level: "full",
 		pii: "conservative",
@@ -188,17 +191,13 @@ export function parseAnonExportArgs(raw: string): AnonExportArgs | { error: stri
 			return { error: `${flag} does not take a value\nUsage: ${USAGE}` };
 		}
 
-		// A bare positional token is the /export-style output path. `zip` stays a
-		// mode keyword unless it was quoted, which is the escape hatch for a file
-		// that really is named "zip" (e.g. `/anon-export "zip"`). Quoting likewise
-		// lets a path begin with `--`.
+		// A bare positional token is the /export-style output path. The zip
+		// command exports the whole session directory and accepts no path.
 		if (!token.startsWith("--") || quoted) {
-			if (token === "zip" && !quoted && args.mode === "current") {
-				if (args.path !== undefined) {
-					return { error: `zip cannot be combined with an output path\nUsage: ${USAGE}` };
-				}
-				args.mode = "zip";
-				continue;
+			if (args.mode === "zip") {
+				return {
+					error: `/anon-export-zip exports every session and does not take an output path (got ${JSON.stringify(token)})\nUsage: ${USAGE}`,
+				};
 			}
 			if (args.path !== undefined) {
 				return {
@@ -263,7 +262,7 @@ export function parseAnonExportArgs(raw: string): AnonExportArgs | { error: stri
 	}
 
 	if (args.mode === "zip" && args.path !== undefined) {
-		return { error: `zip exports every session; it does not take an output path\nUsage: ${USAGE}` };
+		return { error: `/anon-export-zip exports every session; it does not take an output path\nUsage: ${USAGE}` };
 	}
 	if (args.path !== undefined && args.out !== undefined) {
 		return { error: `Use either an output path or --out <dir>, not both\nUsage: ${USAGE}` };

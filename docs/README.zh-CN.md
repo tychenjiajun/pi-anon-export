@@ -28,12 +28,12 @@ pi -e npm:pi-anon-export
 ```
 /anon-export [path]     导出「当前」会话（脱敏），行为与 /export 一致：
                         `.jsonl` 写 JSONL，其他路径写 HTML
-/anon-export zip        导出当前工作目录对应的全部会话，脱敏后打包成一个 zip
+/anon-export-zip        导出当前工作目录对应的全部会话，脱敏后打包成一个 zip
 ```
 
 ![演示：会话文件 → 脱敏 → 结果 → 校验](https://raw.githubusercontent.com/tychenjiajun/pi-anon-export/main/assets/demo.gif)
 
-### 参数（两种模式通用）
+### 参数（两个命令通用）
 
 参数按 shell 规则解析：引号可以包裹带空格的值（`--secret "value with spaces"`），`--flag=value` 可用于以 `--` 开头的值。**缺少值是错误**（`--out --no-images` 不会创建一个叫 `--no-images` 的目录），空值也是错误（`--out ""` 不会悄悄变成当前目录）。
 
@@ -42,7 +42,7 @@ pi -e npm:pi-anon-export
 | `--no-images` | 把内嵌的图片/音频/视频数据块替换为 `[IMAGE_REMOVED]`。不加时图片**按字节原样保留**并计入 `images_flagged`，提醒你人工过一遍。 |
 | `--level fast\|full` | 脱敏深度，默认 `full`。 |
 | `--pii conservative\|aggressive` | `aggressive` 额外启用上游的「人名」「街道地址」模式。需要 `--level full`；`--level fast` 配 `--pii aggressive` 会被直接拒绝（fast 级别不跑 anonymizer，静默失效比报错更糟）。 |
-| `--out <dir>` | 把每个会话写成 `<dir>` 下的一个 JSONL 文件，而不是使用 `/export` 的精确路径语义。zip 模式默认输出到当前目录。 |
+| `--out <dir>` | 输出目录覆盖。`/anon-export` 用它把 JSONL 写到 `<dir>/<会话文件名>.jsonl`，而不走 `/export` 的精确路径模式；`/anon-export-zip` 用它指定归档目录（默认当前目录）。 |
 | `--secret <字面量\|文件>` | 追加一个秘密字面量；若值是可读文件路径，则按「一行一个 secret」读取。可重复。 |
 | `--env-file <路径>` | 用它**替代**默认的 shell rc 文件集合。可重复。 |
 
@@ -56,10 +56,10 @@ pi -e npm:pi-anon-export
 
 HTML 由「已经脱敏的 JSONL」经 pi 自己的导出器生成（system prompt 和当前工具元数据也走同一条脱敏流水线），所以版式与主题和 `/export` 相同，但内容不含原始秘密。取哪个分支也与 `/export` 一致：JSONL 只包含当前实时分支，而不是文件里的所有分支。
 
-原有的批量形式仍然可用：
+两个命令各司其职，路径不会再被当成模式：
 
 - `/anon-export --out <dir>` → `<dir>/<会话文件名>.jsonl`
-- `/anon-export zip` → `./pi-anon-export-<时间戳>.zip`（或 `<--out>/pi-anon-export-<时间戳>.zip`），整次运行共用一个时间戳
+- `/anon-export-zip` → `./pi-anon-export-<时间戳>.zip`（或 `<--out>/pi-anon-export-<时间戳>.zip`），整次运行共用一个时间戳
 
 zip 是**边脱敏边写入**的：每个会话脱敏完立刻压进归档（先写 `<文件名>.<pid>-<随机>.part`，再 rename），所以整个项目的脱敏结果不会同时驻留内存；同一毫秒内的两次运行也不会交错写同一个文件。重复的条目名会被拒绝，空会话或完全无法解析的会话会被报告为「跳过」，而不是产出一个 0 字节文件。
 
@@ -73,7 +73,7 @@ zip 是**边脱敏边写入**的：每个会话脱敏完立刻压进归档（先
 /anon-export                                  # HTML，命名与 /export 一致
 /anon-export report.jsonl                     # 脱敏 JSONL 写到该路径
 /anon-export report.html                      # 脱敏 HTML 写到该路径
-/anon-export zip --no-images
+/anon-export-zip --no-images
 /anon-export --level fast --out /tmp/shareable --secret "my-personal-token"
 /anon-export --env-file ./.env --env-file ~/.zshrc
 ```
