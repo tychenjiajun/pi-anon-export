@@ -437,6 +437,22 @@ await ok("args: backslashes in unquoted paths survive (Windows)", () => {
 	assert.equal(spaced.out, "my dir");
 });
 
+await ok("args: a positional path is the /export-style output target", () => {
+	const jsonl = parseAnonExportArgs("share.jsonl --level fast");
+	assert.ok(!("error" in jsonl));
+	assert.equal(jsonl.path, "share.jsonl");
+	assert.equal(jsonl.out, undefined);
+
+	const quotedZip = parseAnonExportArgs('"zip"');
+	assert.ok(!("error" in quotedZip));
+	assert.equal(quotedZip.path, "zip");
+	assert.equal(quotedZip.mode, "current");
+
+	assert.ok("error" in parseAnonExportArgs("a.jsonl b.jsonl"));
+	assert.ok("error" in parseAnonExportArgs("zip a.jsonl"));
+	assert.ok("error" in parseAnonExportArgs("a.jsonl --out /tmp/out"));
+});
+
 await ok("args: zip is recognized after other flags", () => {
 	const parsed = parseAnonExportArgs("--level fast zip");
 	assert.ok(!("error" in parsed));
@@ -875,7 +891,7 @@ await ok("e2e: falls back to the newest session when there is no live session fi
 		utimesSync(newest, future, future);
 
 		const { ctx } = fakeCtx({ cwd: out.path, sessionDir: sessions.path });
-		await command.handler(`--env-file ${fixtureEnv} --level fast`, ctx);
+		await command.handler(`--env-file ${fixtureEnv} --level fast --out ${out.path}`, ctx);
 		const report = stderr.read();
 		assert.ok(report.includes("Exported 1 session(s)"), report);
 		const exportedPath = /→ (.+)/.exec(report)?.[1]?.trim();
@@ -884,6 +900,196 @@ await ok("e2e: falls back to the newest session when there is no live session fi
 		assert.ok(readFileSync(exportedPath, "utf-8").length > 0);
 	} finally {
 		stderr.restore();
+		out.cleanup();
+		sessions.cleanup();
+	}
+});
+
+await ok("e2e: no path follows /export and writes HTML in the session cwd", async () => {
+	const sessions = makeTempDir("pi-anon-export-e2e-html-sessions");
+	const out = makeTempDir("pi-anon-export-e2e-html-out");
+	const sessionFile = join(sessions.path, "session-1.jsonl");
+	writeFileSync(sessionFile, fixtureSession, "utf-8");
+	const stderr = captureStderr();
+	try {
+		const { ctx } = fakeCtx({ cwd: out.path, sessionDir: sessions.path, sessionFile });
+		await command.handler(`--env-file ${fixtureEnv}`, ctx);
+		const report = stderr.read();
+		assert.ok(report.includes("Exported 1 session(s)"), report);
+		const exportedPath = /→ (.+)/.exec(report)?.[1]?.trim();
+		assert.ok(exportedPath, report);
+		assert.equal(exportedPath, join(out.path, "pi-session-session-1.html"));
+		const html = readFileSync(exportedPath, "utf-8");
+		assert.ok(html.includes("<!DOCTYPE html"), "HTML export must be an HTML document");
+		for (const value of secretValues) assert.ok(!html.includes(value), "secret survived in HTML");
+	} finally {
+		stderr.restore();
+		out.cleanup();
+		sessions.cleanup();
+	}
+});
+
+await ok("e2e: a .jsonl path writes anonymized JSONL and takes private permissions", async () => {
+	const sessions = makeTempDir("pi-anon-export-e2e-path-jsonl-sessions");
+	const out = makeTempDir("pi-anon-export-e2e-path-jsonl-out");
+	const sessionFile = join(sessions.path, "s.jsonl");
+	const target = join(out.path, "shared-session.jsonl");
+	writeFileSync(sessionFile, fixtureSession, "utf-8");
+	const stderr = captureStderr();
+	try {
+		const { ctx } = fakeCtx({ cwd: out.path, sessionDir: sessions.path, sessionFile });
+		await command.handler(`--env-file ${fixtureEnv} "${target}"`, ctx);
+		const report = stderr.read();
+		assert.ok(report.includes(`Exported 1 session(s) → ${target}`), report);
+		const jsonl = readFileSync(target, "utf-8");
+		assert.ok(jsonl.endsWith("\n"));
+		for (const value of secretValues) assert.ok(!jsonl.includes(value), "secret survived in JSONL");
+		assert.equal(statSync(target).mode & 0o777, 0o600);
+	} finally {
+		stderr.restore();
+		out.cleanup();
+		sessions.cleanup();
+	}
+});
+
+await ok("e2e: any non-.jsonl path writes HTML, even without an extension", async () => {
+	const sessions = makeTempDir("pi-anon-export-e2e-path-html-sessions");
+	const out = makeTempDir("pi-anon-export-e2e-path-html-out");
+	const sessionFile = join(sessions.path, "s.jsonl");
+	const target = join(out.path, "my share");
+	writeFileSync(sessionFile, fixtureSession, "utf-8");
+	const stderr = captureStderr();
+	try {
+		const { ctx } = fakeCtx({ cwd: out.path, sessionDir: sessions.path, sessionFile });
+		await command.handler(`--env-file ${fixtureEnv} "${target}"`, ctx);
+		const report = stderr.read();
+		assert.ok(report.includes(`Exported 1 session(s) → ${target}`), report);
+		assert.ok(readFileSync(target, "utf-8").includes("<!DOCTYPE html"));
+		assert.equal(statSync(target).mode & 0o777, 0o600);
+	} finally {
+		stderr.restore();
+		out.cleanup();
+		sessions.cleanup();
+	}
+});
+
+await ok("e2e: current-session JSONL uses the live branch, like /export", async () => {
+	const sessions = makeTempDir("pi-anon-export-e2e-branch-sessions");
+	const out = makeTempDir("pi-anon-export-e2e-branch-out");
+	const target = join(out.path, "branch.jsonl");
+	const branch = [
+		{
+			type: "message",
+			id: "b1",
+			parentId: null,
+			timestamp: "2026-01-01T00:00:00.000Z",
+			message: { role: "user", content: [{ type: "text", text: "only this branch" }] },
+		},
+		{
+			type: "message",
+			id: "b2",
+			parentId: "b1",
+			timestamp: "2026-01-01T00:00:01.000Z",
+			message: { role: "assistant", content: [{ type: "text", text: "reply" }] },
+		},
+	];
+	const notices: Array<{ message: string; type: string }> = [];
+	const ctx = {
+		cwd: out.path,
+		hasUI: false,
+		ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+		sessionManager: {
+			getSessionDir: () => sessions.path,
+			getSessionFile: () => undefined,
+			getSessionId: () => "live-session-id",
+			getCwd: () => out.path,
+			getBranch: () => branch,
+		},
+	};
+	const stderr = captureStderr();
+	try {
+		await command.handler(`--env-file ${fixtureEnv} "${target}"`, ctx);
+		assert.deepEqual(notices, []);
+		const lines = readFileSync(target, "utf-8").trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>);
+		assert.equal(lines.length, 3);
+		assert.equal(lines[0]?.type, "session");
+		assert.equal(lines[0]?.id, "live-session-id");
+		assert.equal(lines[0]?.cwd, out.path);
+		assert.equal(lines[1]?.id, "b1");
+		assert.equal(lines[1]?.parentId, null);
+		assert.equal(lines[2]?.id, "b2");
+		assert.equal(lines[2]?.parentId, "b1");
+	} finally {
+		stderr.restore();
+		out.cleanup();
+		sessions.cleanup();
+	}
+});
+
+await ok("e2e: HTML also redacts the system prompt and tool metadata like /export", async () => {
+	const sessions = makeTempDir("pi-anon-export-e2e-html-state-sessions");
+	const out = makeTempDir("pi-anon-export-e2e-html-state-out");
+	const sessionFile = join(sessions.path, "s.jsonl");
+	writeFileSync(sessionFile, fixtureSession, "utf-8");
+	const notices: Array<{ message: string; type: string }> = [];
+	const commands: FakeCommand[] = [];
+	const toolSecret = secretValues[0] as string;
+	const fakePi = {
+		registerCommand: (_name: string, options: FakeCommand) => commands.push(options),
+		getSettings: () => ({}),
+		getActiveTools: () => ["demo"],
+		getAllTools: () => [
+			{
+				name: "demo",
+				description: `demo tool token ${toolSecret}`,
+				parameters: { type: "object", properties: {} },
+			},
+		],
+	};
+	anonExportExtension(fakePi as unknown as Parameters<typeof anonExportExtension>[0]);
+	const htmlCommand = commands[0];
+	assert.ok(htmlCommand);
+	const ctx = {
+		cwd: out.path,
+		hasUI: false,
+		ui: { notify: (message: string, type: string) => notices.push({ message, type }) },
+		getSystemPrompt: () => "owner system-owner@northwind-labs.io keeps this prompt",
+		sessionManager: {
+			getSessionDir: () => sessions.path,
+			getSessionFile: () => sessionFile,
+		},
+	};
+	const stderr = captureStderr();
+	try {
+		await htmlCommand.handler(`--env-file ${fixtureEnv}`, ctx);
+		assert.deepEqual(notices, []);
+		const exportedPath = /→ (.+)/.exec(stderr.read())?.[1]?.trim();
+		assert.ok(exportedPath, stderr.read());
+		const html = readFileSync(exportedPath, "utf-8");
+		assert.ok(html.includes("Available Tools"), "tool metadata should be present");
+		assert.ok(html.includes("System Prompt"), "system prompt should be present");
+		assert.ok(!html.includes(toolSecret), "tool secret survived in HTML");
+		assert.ok(!html.includes("system-owner@northwind-labs.io"), "system-prompt email survived in HTML");
+	} finally {
+		stderr.restore();
+		out.cleanup();
+		sessions.cleanup();
+	}
+});
+
+await ok("e2e: a path and --out are mutually exclusive", async () => {
+	const sessions = makeTempDir("pi-anon-export-e2e-conflict-sessions");
+	const out = makeTempDir("pi-anon-export-e2e-conflict-out");
+	const previousExitCode = process.exitCode;
+	const stderr = captureStderr();
+	try {
+		const { ctx } = fakeCtx({ cwd: out.path, sessionDir: sessions.path });
+		await command.handler(`--out ${out.path} ${join(out.path, "x.jsonl")}`, ctx);
+		assert.ok(stderr.read().includes("not both"), stderr.read());
+		assert.equal(process.exitCode, 1);
+	} finally {
+		stderr.restore();
+		process.exitCode = previousExitCode;
 		out.cleanup();
 		sessions.cleanup();
 	}

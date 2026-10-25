@@ -7,7 +7,7 @@
 
 English | [简体中文](https://github.com/tychenjiajun/pi-anon-export/blob/main/docs/README.zh-CN.md)
 
-**A [pi](https://pi.dev) extension that exports your agent sessions as anonymized JSONL** — locally, with nothing ever leaving your machine. Use it when you want to share a session transcript (for a bug report, a colleague, or a public gist) without leaking API keys, tokens, cookies, emails, or embedded screenshots.
+**A [pi](https://pi.dev) extension that exports your agent sessions as anonymized JSONL or HTML** — locally, with nothing ever leaving your machine. Use it when you want to share a session transcript (for a bug report, a colleague, or a public gist) without leaking API keys, tokens, cookies, emails, or embedded screenshots.
 
 ![pi-anon-export: a session file before and after redaction](https://raw.githubusercontent.com/tychenjiajun/pi-anon-export/main/assets/preview.png)
 
@@ -26,7 +26,8 @@ pi -e npm:pi-anon-export
 ## Usage
 
 ```
-/anon-export            export the CURRENT session, anonymized, as JSONL
+/anon-export [path]     export the CURRENT session, anonymized — like /export:
+                        `.jsonl` writes JSONL, anything else writes HTML
 /anon-export zip        export ALL sessions of the current working directory's
                         session folder, redacted and packed into one zip
 ```
@@ -42,7 +43,7 @@ Arguments are shell-like and values are validated: an empty value is an error fo
 | `--no-images` | Strip embedded image data blocks (replaced with `[IMAGE_REMOVED]`). Without it, images are **kept byte-exact** and counted for manual review. |
 | `--level fast\|full` | Redaction depth. Default: `full`. |
 | `--pii conservative\|aggressive` | `aggressive` adds the upstream personal-name and street-address patterns. Needs `--level full` (they over-redact prose and code, so they are opt-in); `--level fast` together with `--pii aggressive` is rejected instead of silently doing nothing. |
-| `--out <dir>` | Output directory. Default: `./pi-anon-export-<timestamp>/` for the current session, the current directory for zip mode. |
+| `--out <dir>` | Write one anonymized JSONL file per session into `<dir>` instead of following `/export`'s exact-path semantics. Default in zip mode: the current directory. |
 | `--secret <lit\|file>` | Add an extra literal secret. If the value is a readable file path, it is read as one secret per line. Repeatable. |
 | `--env-file <path>` | Env file to scan **instead of** the default shell rc files. Repeatable. |
 
@@ -50,17 +51,29 @@ Arguments are shell-like: quotes group values (`--secret "value with spaces"`), 
 
 ### Output paths
 
-- `/anon-export` → `./pi-anon-export-<timestamp>/<session-file>.jsonl` (or `<--out>/<session-file>.jsonl`)
+With no `--out`, the command follows `/export` exactly:
+
+- `/anon-export` → `<APP_NAME>-session-<session-file>.html` in the current directory (pi's HTML export; `APP_NAME` is normally `pi`).
+- `/anon-export report.jsonl` → anonymized JSONL at that exact path (parent directories are created, like `/export`).
+- `/anon-export report.html` (or any other non-`.jsonl` path) → anonymized HTML at that exact path.
+
+HTML is generated from already-redacted JSONL through pi's own exporter (the system prompt and active-tool metadata are redacted with the same pipeline), so it keeps the same layout and theme as `/export` while containing none of the original secrets. The current-branch selection is also the same: JSONL contains the live session branch, not every branch in the file.
+
+The legacy/batch forms remain available:
+
+- `/anon-export --out <dir>` → `<dir>/<session-file>.jsonl`
 - `/anon-export zip` → `./pi-anon-export-<timestamp>.zip` (or `<--out>/pi-anon-export-<timestamp>.zip`) — one timestamp for the whole run. Sessions are fed to the zip compressor as they are redacted (the archive is written to a per-run `<name>.<pid>-<random>.part` file, then renamed), so a project's whole redacted set is never buffered in memory and two runs in the same millisecond cannot interleave. Duplicate entry names are rejected, and an unparseable/empty session is reported instead of shipping as a 0-byte file.
 
-Output is created with private permissions (`0700` directory, `0600` files, `0600` archive, enforced even when a stale file or `.part` already exists). If a session still contains a known secret after redaction, its output is **quarantined** instead of written under the normal name: `<session-file>.jsonl.UNSAFE` (or `pi-anon-export-<timestamp>-UNSAFE.zip`), and an unattended run exits non-zero. An output path that resolves to the source session — including through a symlink or hard link — is refused instead of overwriting the live transcript, and an empty or unparseable session is reported as skipped rather than shipped as a 0-byte file. Zip mode writes into the current directory by default — if that directory is a git working tree, the report says so; keep the archive out of commits. A killed run can leave its `<name>.<pid>-<random>.part` file behind (already-redacted bytes, no cleanup sweep); delete those by hand.
+Output is created with private permissions (`0700` directory, `0600` files, `0600` archive, enforced even when a stale file or `.part` already exists). If a session still contains a known secret after redaction, its output is **quarantined** instead of written under the normal name: `<target>.UNSAFE`, `<session-file>.jsonl.UNSAFE` for `--out`, or `pi-anon-export-<timestamp>-UNSAFE.zip`, and an unattended run exits non-zero. An output path that resolves to the source session — including through a symlink or hard link — is refused instead of overwriting the live transcript, and an empty or unparseable session is reported as skipped rather than shipped as a 0-byte file. Zip mode writes into the current directory by default — if that directory is a git working tree, the report says so; keep the archive out of commits. A killed run can leave its `<name>.<pid>-<random>.part` file behind (already-redacted bytes, no cleanup sweep); delete those by hand.
 
 The command reports the number of exported sessions, the output path, the redaction counts (secrets replaced, images removed/flagged, dropped lines, and anonymizer categories), any notes about ignored inputs, and the result of the post-redaction verification pass. When there is no TUI (print/JSON mode) the report goes to **stderr**, so machine-readable stdout stays clean.
 
 ### Examples
 
 ```bash
-/anon-export
+/anon-export                                  # HTML, named like /export
+/anon-export report.jsonl                     # anonymized JSONL at that path
+/anon-export report.html                      # anonymized HTML at that path
 /anon-export zip --no-images
 /anon-export --level fast --out /tmp/shareable --secret "my-personal-token"
 /anon-export --env-file ./.env --env-file ~/.zshrc

@@ -7,7 +7,7 @@
 
 简体中文 | [English](https://github.com/tychenjiajun/pi-anon-export/blob/main/README.md)
 
-**[pi](https://pi.dev) 扩展：把 agent 会话导出成匿名的 JSONL**，全程本地运行，任何内容都不会离开你的机器。适合要分享会话记录的场景——提 bug、发给同事、贴到公开 gist——同时不希望泄露 API key、token、cookie、邮箱或截图。
+**[pi](https://pi.dev) 扩展：把 agent 会话导出成匿名的 JSONL 或 HTML**，全程本地运行，任何内容都不会离开你的机器。适合要分享会话记录的场景——提 bug、发给同事、贴到公开 gist——同时不希望泄露 API key、token、cookie、邮箱或截图。
 
 ![pi-anon-export：会话文件脱敏前后](https://raw.githubusercontent.com/tychenjiajun/pi-anon-export/main/assets/preview.png)
 
@@ -26,7 +26,8 @@ pi -e npm:pi-anon-export
 ## 用法
 
 ```
-/anon-export            导出「当前」会话（脱敏后的 JSONL）
+/anon-export [path]     导出「当前」会话（脱敏），行为与 /export 一致：
+                        `.jsonl` 写 JSONL，其他路径写 HTML
 /anon-export zip        导出当前工作目录对应的全部会话，脱敏后打包成一个 zip
 ```
 
@@ -41,25 +42,37 @@ pi -e npm:pi-anon-export
 | `--no-images` | 把内嵌的图片/音频/视频数据块替换为 `[IMAGE_REMOVED]`。不加时图片**按字节原样保留**并计入 `images_flagged`，提醒你人工过一遍。 |
 | `--level fast\|full` | 脱敏深度，默认 `full`。 |
 | `--pii conservative\|aggressive` | `aggressive` 额外启用上游的「人名」「街道地址」模式。需要 `--level full`；`--level fast` 配 `--pii aggressive` 会被直接拒绝（fast 级别不跑 anonymizer，静默失效比报错更糟）。 |
-| `--out <dir>` | 输出目录。默认：当前会话模式为 `./pi-anon-export-<时间戳>/`，zip 模式为当前目录。 |
+| `--out <dir>` | 把每个会话写成 `<dir>` 下的一个 JSONL 文件，而不是使用 `/export` 的精确路径语义。zip 模式默认输出到当前目录。 |
 | `--secret <字面量\|文件>` | 追加一个秘密字面量；若值是可读文件路径，则按「一行一个 secret」读取。可重复。 |
 | `--env-file <路径>` | 用它**替代**默认的 shell rc 文件集合。可重复。 |
 
 ### 输出路径与隔离
 
-- `/anon-export` → `./pi-anon-export-<时间戳>/<会话文件名>.jsonl`（或 `<--out>/<会话文件名>.jsonl`）
+不传 `--out` 时，命令与 `/export` 完全一致：
+
+- `/anon-export` → 当前目录下的 `<APP_NAME>-session-<会话文件名>.html`（pi 的 HTML 导出；`APP_NAME` 通常为 `pi`）
+- `/anon-export report.jsonl` → 精确写到该路径的脱敏 JSONL（会自动创建父目录，与 `/export` 一致）
+- `/anon-export report.html`（或任意非 `.jsonl` 路径）→ 精确写到该路径的脱敏 HTML
+
+HTML 由「已经脱敏的 JSONL」经 pi 自己的导出器生成（system prompt 和当前工具元数据也走同一条脱敏流水线），所以版式与主题和 `/export` 相同，但内容不含原始秘密。取哪个分支也与 `/export` 一致：JSONL 只包含当前实时分支，而不是文件里的所有分支。
+
+原有的批量形式仍然可用：
+
+- `/anon-export --out <dir>` → `<dir>/<会话文件名>.jsonl`
 - `/anon-export zip` → `./pi-anon-export-<时间戳>.zip`（或 `<--out>/pi-anon-export-<时间戳>.zip`），整次运行共用一个时间戳
 
 zip 是**边脱敏边写入**的：每个会话脱敏完立刻压进归档（先写 `<文件名>.<pid>-<随机>.part`，再 rename），所以整个项目的脱敏结果不会同时驻留内存；同一毫秒内的两次运行也不会交错写同一个文件。重复的条目名会被拒绝，空会话或完全无法解析的会话会被报告为「跳过」，而不是产出一个 0 字节文件。
 
-输出使用私有权限：目录 `0700`、文件 `0600`、归档 `0600`（即使目标位置已存在旧文件或旧的 `.part`，也会被重新收紧）。如果某个会话在脱敏后仍能匹配到已知秘密，它**不会**以正常文件名落盘，而是被隔离成 `<会话文件名>.jsonl.UNSAFE`（zip 模式为 `pi-anon-export-<时间戳>-UNSAFE.zip`），非交互运行（print/JSON 模式）以非零码退出——脚本无法把「仍然泄露的导出」当成干净结果。若输出路径解析后就是源会话本身（包括通过软链接、硬链接指向它），会直接拒绝，避免覆盖 pi 正在写入的实时会话。
+输出使用私有权限：目录 `0700`、文件 `0600`、归档 `0600`（即使目标位置已存在旧文件或旧的 `.part`，也会被重新收紧）。如果某个会话在脱敏后仍能匹配到已知秘密，它**不会**以正常文件名落盘，而是被隔离成 `<目标路径>.UNSAFE`、`--out` 模式的 `<会话文件名>.jsonl.UNSAFE`，或 zip 模式的 `pi-anon-export-<时间戳>-UNSAFE.zip`，非交互运行（print/JSON 模式）以非零码退出——脚本无法把「仍然泄露的导出」当成干净结果。若输出路径解析后就是源会话本身（包括通过软链接、硬链接指向它），会直接拒绝，避免覆盖 pi 正在写入的实时会话。
 
 报告会给出：导出的会话数、输出路径、脱敏计数（替换的秘密数、删除/标记的图片数、丢弃的行数、anonymizer 各类计数）、被忽略输入的说明、以及脱敏后校验的结果。无 TUI（print/JSON 模式）时报告走 **stderr**，保持 stdout 干净。
 
 ### 示例
 
 ```bash
-/anon-export
+/anon-export                                  # HTML，命名与 /export 一致
+/anon-export report.jsonl                     # 脱敏 JSONL 写到该路径
+/anon-export report.html                      # 脱敏 HTML 写到该路径
 /anon-export zip --no-images
 /anon-export --level fast --out /tmp/shareable --secret "my-personal-token"
 /anon-export --env-file ./.env --env-file ~/.zshrc

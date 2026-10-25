@@ -1,6 +1,8 @@
 // pi-anon-export — anonymized session export for the pi coding agent.
 //
-// /anon-export            export the current session, anonymized, as JSONL
+// /anon-export [path]      export the current session, anonymized. The output
+//                         format follows /export: a `.jsonl` path writes JSONL,
+//                         any other path (or no path) writes HTML.
 // /anon-export zip        export every session of the current working
 //                         directory's session folder, zipped with a manifest
 //
@@ -9,8 +11,9 @@
 //   --level fast|full           redaction depth (default: full)
 //   --pii conservative|aggressive
 //                               add name/street-address patterns (full level)
-//   --out <dir>                 output directory (default: ./pi-anon-export-<ts>/
-//                               for the current session, the cwd for zip mode)
+//   --out <dir>                 legacy/batch mode: one JSONL file per session
+//                               in <dir> (without it, [path] follows /export: an
+//                               exact path, or <APP_NAME>-session-<session>.html)
 //   --secret <lit|file>         extra literal secret(s); a value that is a
 //                               readable file path is read one secret per line
 //   --env-file <path>           env file(s) to scan INSTEAD of the default shell
@@ -31,6 +34,7 @@ import { chmodSync, existsSync, mkdirSync, renameSync, rmSync, statSync, writeFi
 import { basename, dirname, join, resolve } from "node:path";
 
 import {
+	CURRENT_SESSION_VERSION,
 	getAgentDir,
 	type ExtensionAPI,
 	type ExtensionCommandContext,
@@ -39,6 +43,7 @@ import {
 
 import { parseAnonExportArgs, USAGE, type AnonExportArgs } from "./lib/args.ts";
 import { createAnonymizer, type Anonymizer } from "./lib/anonymize.ts";
+import { defaultHtmlPath, writeAnonymizedHtml } from "./lib/html.ts";
 import { resolveUserPath } from "./lib/paths.ts";
 import {
 	countResidualSecrets,
@@ -148,10 +153,72 @@ function piAgentDir(): string | undefined {
 	}
 }
 
+interface SessionManagerLike {
+	getBranch?: () => ReadonlyArray<Record<string, unknown> & { id: string }>;
+	getSessionId?: () => string;
+	getCwd?: () => string;
+	getSessionFile?: () => string | undefined;
+}
+
+/**
+ * Serialize the CURRENT BRANCH exactly like pi's /export does: a fresh header
+ * with the session id/cwd, then every branch entry with its parentId rewritten
+ * into a linear chain. Falls back to undefined when the context does not expose
+ * a real session manager (older mocks and tests).
+ */
+function serializeCurrentBranch(sessionManager: unknown): string | undefined {
+	const manager = sessionManager as SessionManagerLike;
+	try {
+		const branch = manager.getBranch?.();
+		if (branch === undefined) return undefined;
+		const header = {
+			type: "session",
+			version: CURRENT_SESSION_VERSION,
+			id: manager.getSessionId?.(),
+			timestamp: new Date().toISOString(),
+			cwd: manager.getCwd?.(),
+		};
+		const entries: unknown[] = [header];
+		let parentId: string | null = null;
+		for (const entry of branch) {
+			entries.push({ ...entry, parentId });
+			parentId = entry.id;
+		}
+		return `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`;
+	} catch {
+		return undefined;
+	}
+}
+
+function currentSessionFile(ctx: ExtensionCommandContext): string | undefined {
+	try {
+		return ctx.sessionManager.getSessionFile();
+	} catch {
+		return undefined;
+	}
+}
+
+/** Use the live theme when available, then the configured theme. */
+function currentThemeName(ctx: ExtensionCommandContext, pi: ExtensionAPI): string | undefined {
+	try {
+		const name = ctx.ui?.theme?.name;
+		if (typeof name === "string" && name.length > 0) return name;
+	} catch {
+		// no TUI theme
+	}
+	try {
+		const name = pi.getSettings().theme;
+		if (typeof name === "string" && name.length > 0) return name;
+	} catch {
+		// settings unavailable
+	}
+	return undefined;
+}
+
 export const anonExportExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 	pi.registerCommand("anon-export", {
 		description:
-			"Export the current session (or all cwd sessions with 'zip') as anonymized JSONL, locally",
+			"Export the current session (HTML or JSONL, like /export) or all cwd sessions with 'zip', anonymized locally",
 		getArgumentCompletions: (prefix) => {
 			// Complete the LAST token only, but keep what was already typed: the
 			// previous version compared the whole prefix, so nothing completed after
@@ -207,42 +274,47 @@ export const anonExportExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 				agentDir: piAgentDir(),
 			});
 
+			// --- Choose /export-style target mode ---------------------------------
+			// With no --out, [path] follows /export semantics: `.jsonl` writes JSONL,
+			// anything else (including no path) writes HTML. `zip` and `--out` keep
+			// the existing batch/JSONL behavior.
+			const pathMode = args.mode === "current" && args.out === undefined;
+			const branchContent = pathMode ? serializeCurrentBranch(ctx.sessionManager) : undefined;
+			const needsFileSource = !pathMode || branchContent === undefined;
+
 			// --- Collect source files --------------------------------------------
 			const sources: Array<{ path: string; name: string }> = [];
 			const listSkipped: Array<{ path: string; error: string }> = [];
 
-			if (args.mode === "current") {
-				let currentFile: string | undefined;
-				try {
-					currentFile = ctx.sessionManager.getSessionFile();
-				} catch {
-					currentFile = undefined;
-				}
-				if (!currentFile) {
-					// No live session file (e.g. print mode): fall back to the most
-					// recent session in the resolved directory.
+			if (needsFileSource) {
+				if (args.mode === "current") {
+					let currentFile: string | undefined = currentSessionFile(ctx);
+					if (!currentFile) {
+						// No live session file (e.g. print mode): fall back to the most
+						// recent session in the resolved directory.
+						const { files, skipped } = listSessionFiles(sessionDir);
+						listSkipped.push(...skipped);
+						const newest = files[0];
+						if (!newest) {
+							fail(
+								ctx,
+								`No current session file and no sessions found in ${sessionDir} (dir source: ${dirSource})`,
+							);
+							return;
+						}
+						currentFile = newest;
+					}
+					sources.push({ path: resolveUserPath(currentFile, ctx.cwd), name: basename(currentFile) });
+				} else {
 					const { files, skipped } = listSessionFiles(sessionDir);
 					listSkipped.push(...skipped);
-					const newest = files[0];
-					if (!newest) {
-						fail(
-							ctx,
-							`No current session file and no sessions found in ${sessionDir} (dir source: ${dirSource})`,
-						);
+					for (const file of files) {
+						sources.push({ path: file, name: basename(file) });
+					}
+					if (sources.length === 0) {
+						fail(ctx, `No *.jsonl sessions found in ${sessionDir} (dir source: ${dirSource})`);
 						return;
 					}
-					currentFile = newest;
-				}
-				sources.push({ path: resolveUserPath(currentFile, ctx.cwd), name: basename(currentFile) });
-			} else {
-				const { files, skipped } = listSessionFiles(sessionDir);
-				listSkipped.push(...skipped);
-				for (const file of files) {
-					sources.push({ path: file, name: basename(file) });
-				}
-				if (sources.length === 0) {
-					fail(ctx, `No *.jsonl sessions found in ${sessionDir} (dir source: ${dirSource})`);
-					return;
 				}
 			}
 
@@ -260,6 +332,208 @@ export const anonExportExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 				warnMissingEnvFiles: args.envFiles.length > 0,
 			});
 			const secretSet = computeSecretFingerprint(secrets);
+
+			// --- /export-style current-session export ------------------------------
+			if (pathMode) {
+				const anonymizer: Anonymizer | undefined =
+					args.level === "full" ? createAnonymizer({ aggressivePii: args.pii === "aggressive" }) : undefined;
+
+				let sourceContent: string;
+				let sourceName: string;
+				let sourcePath: string | undefined;
+				if (branchContent !== undefined) {
+					// The live manager knows the current branch even when the session file
+					// has not been flushed yet, which is exactly what /export serializes.
+					sourceContent = branchContent;
+					sourcePath = currentSessionFile(ctx);
+					let sessionId: string | undefined;
+					try {
+						sessionId = ctx.sessionManager.getSessionId();
+					} catch {
+						sessionId = undefined;
+					}
+					sourceName = sourcePath ? basename(sourcePath) : `${sessionId ?? "current-session"}.jsonl`;
+				} else {
+					const source = sources[0];
+					if (!source) {
+						fail(ctx, "No current session file and no sessions found; nothing exported.");
+						return;
+					}
+					const read = readSessionFileSafe(source.path);
+					if (!read.ok) {
+						fail(ctx, `Failed to read ${source.name}: ${read.error}`);
+						return;
+					}
+					sourceContent = read.content;
+					sourceName = source.name;
+					sourcePath = source.path;
+				}
+
+				const { lines, counts } = redactSessionJsonl(sourceContent, {
+					level: args.level,
+					removeImages: args.removeImages,
+					secrets,
+					anonymizer,
+				});
+				if (lines.length === 0) {
+					fail(ctx, "Nothing to export yet - start a conversation first");
+					return;
+				}
+				const redacted = `${lines.join("\n")}\n`;
+
+				// Format selection is /export's: only a `.jsonl` target is JSONL.
+				const wantsJsonl = args.path !== undefined && args.path.endsWith(".jsonl");
+
+				// /export's HTML also carries the system prompt and the active tool
+				// metadata. Redact those through the same pipeline (and include them
+				// in verification) instead of dropping them from our HTML copy.
+				let htmlState: Record<string, unknown> | undefined;
+				let verificationContent = redacted;
+				if (!wantsJsonl) {
+					const stateSource: Record<string, unknown> = {};
+					try {
+						const systemPrompt = ctx.getSystemPrompt();
+						if (typeof systemPrompt === "string" && systemPrompt.length > 0) {
+							stateSource.systemPrompt = systemPrompt;
+						}
+					} catch {
+						// no system prompt in this mode
+					}
+					try {
+						const active = new Set(pi.getActiveTools());
+						const tools = pi
+							.getAllTools()
+							.filter((tool) => active.has(tool.name))
+							.map((tool) => ({
+								name: tool.name,
+								description: tool.description,
+								parameters: tool.parameters,
+							}));
+						if (tools.length > 0) stateSource.tools = tools;
+					} catch {
+						// tool metadata is optional
+					}
+					if (Object.keys(stateSource).length > 0) {
+						const synthetic = redactSessionJsonl(JSON.stringify(stateSource), {
+							level: args.level,
+							removeImages: args.removeImages,
+							secrets,
+							anonymizer,
+						});
+						mergeCounts(counts, synthetic.counts);
+						const line = synthetic.lines[0];
+						if (line !== undefined) {
+							const parsed: unknown = JSON.parse(line);
+							if (parsed !== null && typeof parsed === "object") {
+								htmlState = parsed as Record<string, unknown>;
+								verificationContent += `${line}\n`;
+							}
+						}
+					}
+				}
+				const residualSecrets = countResidualSecrets(verificationContent, secrets);
+
+				let target: string;
+				try {
+					target =
+						args.path !== undefined
+							? resolveUserPath(args.path, ctx.cwd)
+							: await defaultHtmlPath(ctx.cwd, basename(sourceName, ".jsonl"));
+				} catch (error) {
+					fail(ctx, error instanceof Error ? error.message : String(error));
+					return;
+				}
+				if (residualSecrets > 0) target = `${target}${UNSAFE_SUFFIX}`;
+
+				if (sourcePath !== undefined) {
+					const sourceAbs = resolveUserPath(sourcePath, ctx.cwd);
+					if (resolve(target) === resolve(sourceAbs) || isSameFile(target, sourceAbs)) {
+						fail(
+							ctx,
+							`Refusing to overwrite the source session ${sourcePath} — choose a different output path`,
+						);
+						return;
+					}
+				}
+
+				if (wantsJsonl) {
+					try {
+						// pi's /export creates parent directories for JSONL, with private
+						// permissions because the transcript is still private data.
+						mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+						writeFileSync(target, redacted, { encoding: "utf-8", mode: 0o600 });
+						try {
+							chmodSync(target, 0o600);
+						} catch {
+							// best effort
+						}
+						if (residualSecrets === 0) rmSync(`${target}${UNSAFE_SUFFIX}`, { force: true });
+					} catch (error) {
+						fail(ctx, `Failed to export session: ${error instanceof Error ? error.message : String(error)}`);
+						return;
+					}
+				} else {
+					try {
+						await writeAnonymizedHtml(redacted, {
+							outputPath: target,
+							sessionBasename: sourceName,
+							themeName: currentThemeName(ctx, pi),
+							state: htmlState,
+						});
+						if (residualSecrets === 0) rmSync(`${target}${UNSAFE_SUFFIX}`, { force: true });
+					} catch (error) {
+						fail(ctx, `Failed to export session: ${error instanceof Error ? error.message : String(error)}`);
+						return;
+					}
+				}
+
+				const modeFlags = [
+					args.level,
+					args.pii === "aggressive" ? "pii=aggressive" : "",
+					args.removeImages ? "no-images" : "",
+				].filter((part) => part.length > 0);
+				const report: string[] = [
+					`Exported 1 session(s) → ${target}`,
+					`Redactions (${modeFlags.join(", ")}): ${formatCounts(counts)}`,
+					`Secret set: ${secrets.length} literal(s)`,
+				];
+				if (counts.dropped_lines > 0) {
+					report.push(
+						`Dropped ${counts.dropped_lines} line(s) that could not be parsed or processed — never passed through.`,
+					);
+				}
+				if (counts.images_flagged > 0) {
+					report.push("⚠ Images were KEPT and flagged for manual review — check before sharing.");
+				}
+				if (residualSecrets > 0) {
+					report.push(
+						`✖ VERIFICATION FAILED: ${residualSecrets} known secret occurrence(s) survived redaction. Do NOT share ${target}.`,
+					);
+				} else if (secrets.length > 0) {
+					report.push(
+						args.level === "fast"
+							? "Verified: no known secret literal remains (fast level: emails/PII were not scanned)."
+							: "Verified: no known secret literal remains in the output.",
+					);
+				} else {
+					report.push(
+						"⚠ No secret literals were found to verify against — check the output yourself before sharing.",
+					);
+				}
+				if (isInsideGitRepo(dirname(target))) {
+					report.push(
+						`Note: ${dirname(target)} is inside a git working tree — keep the export out of commits (add it to .gitignore).`,
+					);
+				}
+				if (warnings.length > 0) report.push(...warnings.map((warning) => `Note: ${warning}`));
+
+				if (residualSecrets > 0) {
+					fail(ctx, report.join("\n"));
+					return;
+				}
+				notify(ctx, report.join("\n"), counts.images_flagged > 0 ? "warning" : "info");
+				return;
+			}
 
 			const stamp = timestampSlug();
 			const defaultOut = args.mode === "zip" ? ctx.cwd : `./pi-anon-export-${stamp}/`;

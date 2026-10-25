@@ -16,6 +16,12 @@ export type PiiLevel = "conservative" | "aggressive";
 export interface AnonExportArgs {
 	/** "zip" exports every session of the cwd's session dir; anything else exports the current session. */
 	mode: "current" | "zip";
+	/**
+	 * Optional /export-style target file. Relative paths resolve against the
+	 * session cwd. A `.jsonl` suffix selects JSONL; every other name selects
+	 * HTML, exactly like /export. Mutually exclusive with --out.
+	 */
+	path?: string;
 	/** --no-images: strip embedded image data blocks. */
 	removeImages: boolean;
 	/** --level fast|full (default full). */
@@ -31,7 +37,7 @@ export interface AnonExportArgs {
 }
 
 export const USAGE =
-	"/anon-export [zip] [--no-images] [--level fast|full] [--pii conservative|aggressive] [--out <dir>] [--secret <literal|file>] [--env-file <path>]";
+	"/anon-export [path] [--no-images] [--level fast|full] [--pii conservative|aggressive] [--secret <literal|file>] [--env-file <path>]\n  /anon-export zip [--out <dir>] [flags]\n  /anon-export --out <dir> [flags]  (JSONL in <dir>, one file per session)";
 
 const VALUE_FLAGS = new Set(["--level", "--pii", "--out", "--secret", "--env-file"]);
 
@@ -173,18 +179,38 @@ export function parseAnonExportArgs(raw: string): AnonExportArgs | { error: stri
 
 	for (let i = 0; i < tokens.length; i++) {
 		const token = (tokens[i] as ArgToken).value;
+		const quoted = (tokens[i] as ArgToken).quoted;
 		const eq = token.startsWith("--") ? token.indexOf("=") : -1;
 		const flag = eq >= 0 ? token.slice(0, eq) : token;
 		const inline = eq >= 0 ? token.slice(eq + 1) : undefined;
 
-		if (!VALUE_FLAGS.has(flag) && inline !== undefined) {
+		if (!quoted && !VALUE_FLAGS.has(flag) && inline !== undefined) {
 			return { error: `${flag} does not take a value\nUsage: ${USAGE}` };
 		}
 
-		switch (flag) {
-			case "zip":
+		// A bare positional token is the /export-style output path. `zip` stays a
+		// mode keyword unless it was quoted, which is the escape hatch for a file
+		// that really is named "zip" (e.g. `/anon-export "zip"`). Quoting likewise
+		// lets a path begin with `--`.
+		if (!token.startsWith("--") || quoted) {
+			if (token === "zip" && !quoted && args.mode === "current") {
+				if (args.path !== undefined) {
+					return { error: `zip cannot be combined with an output path\nUsage: ${USAGE}` };
+				}
 				args.mode = "zip";
-				break;
+				continue;
+			}
+			if (args.path !== undefined) {
+				return {
+					error: `Only one output path is accepted (got ${JSON.stringify(args.path)} and ${JSON.stringify(token)})\nUsage: ${USAGE}`,
+				};
+			}
+			if (token.length === 0) return { error: `Output path must not be empty\nUsage: ${USAGE}` };
+			args.path = token;
+			continue;
+		}
+
+		switch (flag) {
 			case "--no-images":
 				args.removeImages = true;
 				break;
@@ -234,6 +260,13 @@ export function parseAnonExportArgs(raw: string): AnonExportArgs | { error: stri
 			default:
 				return { error: `Unknown argument: ${token}\nUsage: ${USAGE}` };
 		}
+	}
+
+	if (args.mode === "zip" && args.path !== undefined) {
+		return { error: `zip exports every session; it does not take an output path\nUsage: ${USAGE}` };
+	}
+	if (args.path !== undefined && args.out !== undefined) {
+		return { error: `Use either an output path or --out <dir>, not both\nUsage: ${USAGE}` };
 	}
 
 	// Rejected rather than ignored: at `fast` no anonymizer runs, so the name and
