@@ -132,16 +132,24 @@ const MEDIA_MAGIC_PREFIXES: readonly string[] = [
 
 const IMAGE_REPLACEMENT = "[IMAGE_REMOVED]";
 
-function declaresMediaType(owner: Record<string, unknown> | undefined): boolean {
-	if (owner === undefined) return false;
+/** Lowercase MIME type declared on `owner`, if it is a media type. */
+function declaredMediaTypeName(owner: Record<string, unknown> | undefined): string | null {
+	if (owner === undefined) return null;
 	for (const key of MEDIA_TYPE_KEYS) {
 		const candidate = owner[key];
 		if (typeof candidate !== "string") continue;
-		const lowered = candidate.toLowerCase();
-		if (MEDIA_TYPE_PREFIXES.some((prefix) => lowered.startsWith(prefix))) return true;
+		const lowered = candidate.toLowerCase().split(";")[0]?.trim() ?? "";
+		if (MEDIA_TYPE_PREFIXES.some((prefix) => lowered.startsWith(prefix))) return lowered;
 	}
-	return false;
+	return null;
 }
+
+function declaresMediaType(owner: Record<string, unknown> | undefined): boolean {
+	return declaredMediaTypeName(owner) !== null;
+}
+
+/** Media types whose payload is text (so it must go through the text pipeline). */
+const TEXTUAL_MEDIA_RE = /^(?:text\/|.*\+xml$|.*json$)/;
 
 function startsWithMediaMagic(value: string): boolean {
 	return MEDIA_MAGIC_PREFIXES.some((prefix) => value.startsWith(prefix));
@@ -178,11 +186,21 @@ function isMediaPayload(key: string, value: string, owner: Record<string, unknow
 	// Bytes that identify themselves.
 	if (MEDIA_DATA_URL_RE.test(value)) return true;
 	if (startsWithMediaMagic(value)) return true;
-	// The parent says what it is. A declared MIME type is strong evidence for any
-	// key; a bare `type: image` needs a payload-ish key; `type: base64` needs the
-	// value to actually look like base64.
-	if (declaresMediaType(owner)) return true;
-	if (declaresTypedMedia(owner) && (TYPED_MEDIA_KEYS.has(key) || MEDIA_KEYS.has(key) || AMBIGUOUS_MEDIA_KEYS.has(key))) {
+	// The parent says what it is: a declared MIME type is evidence about the
+	// PAYLOAD (and only for a payload-ish key); a bare `type: image` needs a
+	// payload-ish key; `type: base64` needs the value to look like base64.
+	const payloadKey =
+		TYPED_MEDIA_KEYS.has(key) || MEDIA_KEYS.has(key) || AMBIGUOUS_MEDIA_KEYS.has(key);
+	if (declaresMediaType(owner)) {
+		// A declared MIME type is evidence about the PAYLOAD, not about every
+		// long string that happens to sit next to it: `{"mimeType":"image/png",
+		// "note":"…long prose…"}` exempted the prose from redaction and
+		// (with --no-images) deleted it as if it were the image.
+		// A text-based media type (image/svg+xml) carries TEXT, so it is redacted.
+		const declared = declaredMediaTypeName(owner);
+		return payloadKey && !(declared !== null && TEXTUAL_MEDIA_RE.test(declared));
+	}
+	if (declaresTypedMedia(owner) && payloadKey) {
 		return true;
 	}
 	if (declaresBase64Type(owner)) return fullMatchBase64Blob(value);

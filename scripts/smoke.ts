@@ -395,11 +395,11 @@ await ok("args: defaults", () => {
 
 await ok("args: all flags, including --flag=value and repeated values", () => {
 	const all = parseAnonExportArgs(
-		'zip --no-images --level=fast --pii aggressive --out /tmp/x --secret "lit with spaces" --secret=/path/f --env-file a --env-file=b',
+		'zip --no-images --level=full --pii=aggressive --out /tmp/x --secret "lit with spaces" --secret=/path/f --env-file a --env-file=b',
 	);
 	assert.ok(!("error" in all));
 	assert.equal(all.mode, "zip");
-	assert.equal(all.level, "fast");
+	assert.equal(all.level, "full");
 	assert.equal(all.pii, "aggressive");
 	assert.equal(all.removeImages, true);
 	assert.equal(all.out, "/tmp/x");
@@ -419,6 +419,8 @@ await ok("args: invalid input is rejected instead of silently misparsed", () => 
 		"--out=",
 		"--no-images=1",
 		'--secret "unterminated',
+		"--pii aggressive --level fast",
+		"--level=fast --pii=aggressive",
 	];
 	for (const raw of cases) {
 		assert.ok("error" in parseAnonExportArgs(raw), `expected an error for: ${raw}`);

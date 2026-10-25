@@ -27,7 +27,7 @@
 // the sessionDir setting); otherwise the directory is derived from the cwd
 // using pi's --<path>-- naming convention (see lib/sessions.ts).
 
-import { chmodSync, existsSync, mkdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 
 import {
@@ -377,6 +377,12 @@ export const anonExportExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 						} catch {
 							// best effort: the content is written, permissions are secondary
 						}
+						if (fileResidual === 0) {
+							// A previous run may have quarantined this same session. A stale
+							// `*.UNSAFE` file next to a clean one is what a careless `cp *`
+							// picks up, so a verified file takes its stale quarantine down.
+							rmSync(`${outPath}${UNSAFE_SUFFIX}`, { force: true });
+						}
 					} catch (error) {
 						fail(ctx, `Failed to write ${outPath}: ${String(error)}`);
 						return;
@@ -412,6 +418,9 @@ export const anonExportExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 					// rename is all that is needed to quarantine it.
 					const unsafePath = outputPath.replace(/\.zip$/, `-UNSAFE.zip`);
 					try {
+						// rename() does not replace an existing file on every platform;
+						// drop a stale quarantine of the same run first.
+						rmSync(unsafePath, { force: true });
 						renameSync(outputPath, unsafePath);
 						outputPath = unsafePath;
 					} catch (error) {
@@ -438,9 +447,6 @@ export const anonExportExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 				`Redactions (${modeFlags.join(", ")}): ${formatCounts(totals)}`,
 				`Secret set: ${secrets.length} literal(s)${args.mode === "zip" ? " (fingerprint in manifest.json)" : ""}`,
 			];
-			if (args.pii === "aggressive" && args.level === "fast") {
-				lines.push("Note: --pii has no effect at --level fast (no anonymizer runs).");
-			}
 			if (totals.dropped_lines > 0) {
 				lines.push(
 					`Dropped ${totals.dropped_lines} line(s) that could not be parsed or processed — never passed through.`,
@@ -473,17 +479,18 @@ export const anonExportExtension: ExtensionFactory = (pi: ExtensionAPI) => {
 				);
 			}
 			if (insideGitRepo) {
+				// Advisory, NOT an anomaly: in `zip` mode the output defaults to cwd,
+				// which is a git working tree for basically every agent run. Counting
+				// it as "needs attention" made the warning permanent and therefore
+				// worthless.
 				lines.push(
-					`⚠ ${outDir} is inside a git working tree — keep the export out of commits (add it to .gitignore).`,
+					`Note: ${outDir} is inside a git working tree — keep the export out of commits (add it to .gitignore).`,
 				);
 			}
 			if (warnings.length > 0) lines.push(...warnings.map((warning) => `Note: ${warning}`));
 
 			const needsAttention =
-				allSkipped.length > 0 ||
-				totals.images_flagged > 0 ||
-				quarantined.length > 0 ||
-				insideGitRepo;
+				allSkipped.length > 0 || totals.images_flagged > 0 || quarantined.length > 0;
 			if (residualSecrets > 0) {
 				fail(ctx, lines.join("\n"));
 				return;

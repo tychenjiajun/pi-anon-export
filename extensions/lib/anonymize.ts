@@ -194,9 +194,18 @@ class SegmentLocator {
 		this.text = text;
 	}
 
-	/** [start, end) of the segment containing `offset`; `end` may be the text length. */
+	/**
+	 * [start, end) of the segment containing `offset`; `end` may be the text
+	 * length.
+	 *
+	 * The cursor only moves forward, so `end` saturates at the text length: an
+	 * offset AT or PAST the end used to keep `end <= offset` true forever and
+	 * spin, and a non-increasing offset would return a segment that does not
+	 * contain it. Both are clamped here instead of handing the caller a hang.
+	 */
 	containing(offset: number): { start: number; end: number } {
-		while (this.end <= offset) {
+		const target = offset >= this.text.length ? this.text.length - 1 : offset;
+		while (this.end <= target && this.end < this.text.length) {
 			this.start = this.end + 1;
 			this.boundary.lastIndex = this.start;
 			const match = this.boundary.exec(this.text);

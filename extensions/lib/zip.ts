@@ -265,7 +265,15 @@ export function openExportZip(options: ExportZipDescriptor): ExportZipWriter {
 				throw new Error(`Duplicate archive entry: ${file.archivePath}`);
 			}
 			archiveNames.add(file.archivePath);
-			addEntry(file.archivePath, file.content);
+			try {
+				addEntry(file.archivePath, file.content);
+			} catch (error) {
+				// A failed write (or a failed fflate push) leaves the shared stream in an
+				// unknown state: mark it broken so a caller that swallows the error cannot
+				// keep appending bytes into a corrupt archive. `abort()` cleans up.
+				state = "broken";
+				throw error;
+			}
 			// Hash the exact content that was just compressed, in the same step,
 			// so the manifest can never describe a different file.
 			files.push({

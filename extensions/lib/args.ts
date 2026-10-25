@@ -236,5 +236,14 @@ export function parseAnonExportArgs(raw: string): AnonExportArgs | { error: stri
 		}
 	}
 
+	// Rejected rather than ignored: at `fast` no anonymizer runs, so the name and
+	// address patterns the caller explicitly asked for would silently not run and
+	// the report would still say "pii=aggressive".
+	if (args.pii === "aggressive" && args.level === "fast") {
+		return {
+			error: `--pii aggressive requires --level full (no anonymizer runs at --level fast)\nUsage: ${USAGE}`,
+		};
+	}
+
 	return args;
 }

@@ -298,6 +298,19 @@ await ok("S8: quoting lets a value start with dashes, but a following flag is st
 });
 
 // ---------------------------------------------------------------------------
+await ok("S9: `--pii aggressive` with `--level fast` is refused, in any order", () => {
+	// At `fast` no anonymizer runs, so the patterns the caller asked for would
+	// silently do nothing while the report still claimed pii=aggressive.
+	for (const raw of ["--pii aggressive --level fast", "--level=fast --pii=aggressive"]) {
+		const parsed = parseAnonExportArgs(raw);
+		assert.ok("error" in parsed, `expected an error for: ${raw}`);
+		assert.match(parsed.error, /requires --level full/, parsed.error);
+	}
+	const okFull = parseAnonExportArgs("--pii aggressive --level full");
+	assert.ok(!("error" in okFull));
+	assert.equal(okFull.pii, "aggressive");
+});
+
 group("hypotheses: anonymizer");
 
 await ok("A1: credential-URL passwords may contain / # ? @", () => {
@@ -661,6 +674,30 @@ await ok("P12: a stale `.part` file cannot weaken the archive permissions", () =
 	}
 });
 
+await ok("P15: a rejected duplicate name does not poison the archive", () => {
+	// Rejecting a duplicate happens BEFORE anything is written, so the stream is
+	// still sound and the caller can carry on. A real write failure is different:
+	// it marks the writer broken (see zip.ts `add`), so a caller that swallows the
+	// error cannot append bytes into a corrupt archive.
+	const tmp = makeTempDir("hyp-zip-dupe-survives");
+	try {
+		const zipPath = join(tmp.path, "export.zip");
+		const writer = openExportZip({ path: zipPath, level: "fast", removeImages: false });
+		writer.add({ source: "a", archivePath: "a.jsonl", content: "{}\n", redactionCounts: emptyCounts() });
+		assert.throws(
+			() => writer.add({ source: "a2", archivePath: "a.jsonl", content: "{}\n", redactionCounts: emptyCounts() }),
+			/Duplicate archive entry/,
+		);
+		writer.add({ source: "c", archivePath: "c.jsonl", content: "{}\n", redactionCounts: emptyCounts() });
+		writer.finish({ verification: { residualSecrets: 0, secretSet: computeSecretFingerprint([], "s") } });
+
+		const entries = unzipSync(new Uint8Array(readFileSync(zipPath)));
+		assert.deepEqual(Object.keys(entries).sort(), ["a.jsonl", "c.jsonl", "manifest.json"]);
+	} finally {
+		tmp.cleanup();
+	}
+});
+
 await ok("P4: two concurrent writers cannot interleave into one artifact", () => {
 	const tmp = makeTempDir("hyp-zip-race");
 	try {
@@ -846,6 +883,63 @@ await ok("PN2: media detection follows evidence (type, MIME type, magic), not ju
 	}
 });
 
+await ok("P13: a long prose field next to a declared media MIME type is TEXT", () => {
+	// `declaresMediaType(owner)` used to exempt EVERY long string in the object,
+	// so `{"mimeType":"image/png","note":"…long prose with an address…"}` shipped
+	// the address unredacted — and --no-images deleted the prose as if it were
+	// the image.
+	const prose = `contact john.smith@corp-mail.com for the log. ${"y".repeat(240)}`;
+	const line = sessionLine({
+		type: "tool-result",
+		mimeType: "image/png",
+		note: prose,
+		data: `iVBORw0KGgo${"B".repeat(400)}`,
+	});
+
+	const kept = redactSessionJsonl(line, {
+		level: "full",
+		removeImages: false,
+		secrets: [],
+		anonymizer: createAnonymizer(),
+	});
+	assert.ok(!kept.lines.join("").includes("john.smith@corp-mail.com"), "prose must be redacted");
+	assert.equal(kept.counts.images_flagged, 1, "only the payload is flagged, not the prose");
+
+	const stripped = redactSessionJsonl(line, {
+		level: "full",
+		removeImages: true,
+		secrets: [],
+		anonymizer: createAnonymizer(),
+	});
+	assert.ok(stripped.lines.join("").includes("for the log"), "prose must survive --no-images");
+	assert.equal(stripped.counts.images_removed, 1, "only the payload is removed");
+});
+
+await ok("P14: a text-based media type (SVG) carries text, so it is redacted", () => {
+	// `image/svg+xml` is an image MIME type whose payload is XML: exempting it
+	// skipped the whole redaction pipeline, so an address inside the SVG shipped
+	// verbatim (and a literal secret only showed up in the verification pass).
+	const svg = `<svg xmlns="http://www.w3.org/2000/svg">${"x".repeat(300)}<desc>john.smith@corp-mail.com</desc></svg>`;
+	const line = sessionLine({ type: "file", mimeType: "image/svg+xml", data: svg });
+
+	const kept = redactSessionJsonl(line, {
+		level: "full",
+		removeImages: false,
+		secrets: [],
+		anonymizer: createAnonymizer(),
+	});
+	assert.ok(!kept.lines.join("").includes("john.smith@corp-mail.com"), "SVG text must be redacted");
+	assert.equal(kept.counts.images_flagged, 0, "SVG is text, not an image payload");
+
+	const stripped = redactSessionJsonl(line, {
+		level: "full",
+		removeImages: true,
+		secrets: [],
+		anonymizer: createAnonymizer(),
+	});
+	assert.equal(stripped.counts.images_removed, 0, "nothing to strip: it was never a payload");
+});
+
 await ok("PN3: the overwrite guard also catches symlinks and hard links to the session", async () => {
 	const tmp = makeTempDir("hyp-alias");
 	const out = makeTempDir("hyp-alias-out");
@@ -924,6 +1018,35 @@ await ok("P2b: discovery lists what it will export, and the count matches the ar
 		stderr.restore();
 		cwd.cleanup();
 		tmp.cleanup();
+	}
+});
+
+await ok("P17: a verified re-export removes the stale quarantine of the same session", async () => {
+	// Run 1 quarantines `s.jsonl` as `s.jsonl.UNSAFE`. After the fix, run 2 writes a
+	// clean `s.jsonl`; leaving the old unsafe file next to it means a careless
+	// `cp *` or `git add -A` ships the file that still contains the secret.
+	const sessions = makeTempDir("hyp-stale-sessions");
+	const out = makeTempDir("hyp-stale-out");
+	const env = makeTempDir("hyp-stale-env");
+	const stderr = captureStderr();
+	const previousExitCode = process.exitCode;
+	try {
+		const sessionFile = join(sessions.path, "s.jsonl");
+		writeFileSync(sessionFile, sessionLine({ type: "message", message: { role: "user", content: "hi" } }), "utf-8");
+		const stale = join(out.path, "s.jsonl.UNSAFE");
+		writeFileSync(stale, "old leaky export\n", "utf-8");
+		const envFile = writeEnv(env.path, "env", "");
+
+		await command.handler(`--out ${out.path} --env-file ${envFile}`, fakeCtx(sessions.path, out.path, sessionFile));
+
+		assert.ok(existsSync(join(out.path, "s.jsonl")), "the verified file must be written");
+		assert.ok(!existsSync(stale), "the stale quarantine must be gone");
+	} finally {
+		stderr.restore();
+		process.exitCode = previousExitCode;
+		env.cleanup();
+		out.cleanup();
+		sessions.cleanup();
 	}
 });
 
