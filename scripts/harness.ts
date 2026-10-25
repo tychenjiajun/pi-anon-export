@@ -32,8 +32,10 @@ export function summary(label: string): void {
 	console.log(`\n${label}: ${passed} passed, ${failed} failed`);
 	if (failed > 0) {
 		console.error(`\n${failures.join("\n\n")}`);
-		process.exitCode = 1;
 	}
+	// Explicit, so a test that intentionally triggers a failing command (and the
+	// extension sets process.exitCode = 1) cannot leak its exit code into the run.
+	process.exitCode = failed > 0 ? 1 : 0;
 }
 
 export interface TempDir {

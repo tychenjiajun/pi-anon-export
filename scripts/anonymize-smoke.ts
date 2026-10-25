@@ -135,13 +135,25 @@ await ok("PEM private key block is replaced entirely", () => {
 
 group("anonymize: high-confidence PII and structured data");
 
-await ok("SSN, phone and IP are replaced (CONSERVATIVE mode)", () => {
+await ok("SSN, phone and IP are replaced (conservative default)", () => {
 	const a = fresh();
 	const out = a.anonymizeValue("ssn 123-45-6789 phone 555-123-4567 ip 10.1.2.3") as string;
 	assert.ok(!out.includes("123-45-6789"), out);
 	assert.ok(!out.includes("555-123-4567"), out);
 	assert.ok(!out.includes("10.1.2.3"), out);
 	assert.ok((a.counts.pii ?? 0) >= 3, JSON.stringify(a.counts));
+});
+
+await ok("aggressive PII mode redacts names and street addresses", () => {
+	const aggressive = createAnonymizer({ aggressivePii: true });
+	const out = aggressive.anonymizeValue("my name is Alice Johnson and I live at 42 Main Street") as string;
+	assert.ok(!out.includes("Alice Johnson"), out);
+	assert.ok(!out.includes("42 Main Street"), out);
+
+	// The default keeps them (the source's aggressive patterns over-redact code
+	// and prose); the switch is what makes that a choice instead of dead code.
+	const conservative = fresh().anonymizeValue("my name is Alice Johnson") as string;
+	assert.ok(conservative.includes("Alice Johnson"), conservative);
 });
 
 await ok("home paths have the local username mapped, path kept", () => {

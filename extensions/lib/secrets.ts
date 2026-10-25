@@ -9,10 +9,12 @@
 // behavior is reimplemented here, with an unrelated line-based parser.
 //
 // Behavior:
-// - env files (default: the user's shell rc files): lines starting with
-//   `export`, valid shell identifier names, value = text after the first `=`
-//   (one optional opening quote), truncated at the first `"`, `'`, or `#`,
-//   then trimmed
+// - env files (default: the user's shell rc files): `export NAME=value` lines
+//   (optionally indented), valid shell identifier names, value read the way a
+//   POSIX shell reads it: a quoted value runs to its matching closing quote
+//   (so `#` inside quotes is part of the secret), an unquoted value ends at
+//   the first whitespace (a `#` that starts a word is a comment, but
+//   `plain#not-a-comment` keeps its `#`)
 // - a variable counts as secret when its name contains KEY / TOKEN / SECRET /
 //   PASS / PWD / COOKIE / CREDENTIAL (case-insensitive) and the value is at
 //   least MIN_SECRET_LENGTH characters
@@ -24,7 +26,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import { resolveUserPath } from "./paths.ts";
 
@@ -58,51 +60,196 @@ export function looksSensitiveName(name: string): boolean {
 	return SENSITIVE_NAME_PARTS.some((part) => upper.includes(part));
 }
 
-/** Shell rc files scanned when the user passes no --env-file. Missing files are skipped. */
+/**
+ * Shell rc files scanned when the user passes no --env-file, in the order a
+ * shell would source them: a later file overrides an earlier one, so the value
+ * the user actually gets in an interactive shell wins (`.zshenv` → `.zprofile`
+ * → `.zshrc` → `.zlogin`, then the bash files). Missing files are skipped.
+ */
 export function defaultEnvFiles(home: string = homedir()): string[] {
-	return [".zshrc", ".zshenv", ".bashrc", ".bash_profile", ".profile"].map((name) => join(home, name));
+	return [
+		".zshenv",
+		".zprofile",
+		".zshrc",
+		".zlogin",
+		".bash_profile",
+		".bashrc",
+		".profile",
+	].map((name) => join(home, name));
 }
 
-const EXPORT_PREFIX = "export";
+const EXPORT_LINE_RE = /^\s*(?:export|declare\s+-x)\s+/;
 const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const VALUE_STOP_RE = /["'#]/;
+const WHITESPACE_RE = /[ \t\r\n\f\v]/;
+
+/** Strip a UTF-8 BOM and split on CRLF, CR and LF. */
+function splitEnvLines(content: string): string[] {
+	return content.replace(/^\uFEFF/, "").split(/\r\n|\r|\n/);
+}
+
+/**
+ * Read the value part of an assignment the way a POSIX shell would.
+ *
+ * Quoted segments run to their matching closing quote and concatenate with
+ * unquoted runs (`"$HOME/bin"` + `:x`), so a `#` inside quotes stays part of
+ * the value. Truncating at the first `#` used to turn `"Tr0ub4dor#2024!x"`
+ * into `"Tr0ub4dor"`: only the prefix was redacted, the tail leaked, and the
+ * residual-secret verification could not see it (it only knew the truncated
+ * needle). An unquoted run ends at whitespace (so ` # comment` is skipped),
+ * and an unterminated quote keeps the remainder rather than dropping a real
+ * secret.
+ */
+function readShellValue(raw: string): string {
+	let out = "";
+	let index = 0;
+	while (index < raw.length) {
+		const char = raw.charAt(index);
+		if (char === '"' || char === "'") {
+			const rest = raw.slice(index);
+			const closing = findClosingQuote(rest, char);
+			if (closing < 0) return out + rest.slice(1).replace(/\s+$/, "");
+			out += unescapeQuotedValue(rest.slice(1, closing), char);
+			index += closing + 1;
+			continue;
+		}
+		if (char === "\\" && index + 1 < raw.length) {
+			// Unquoted `\ ` / `\#` / `\"` keep the escaped character: bash sets
+			// `API_KEY=abc123\ def456` to `abc123 def456`, and stopping at the
+			// space produced the truncated needle `abc123\`.
+			out += raw.charAt(index + 1);
+			index += 2;
+			continue;
+		}
+		if (WHITESPACE_RE.test(char)) break;
+		out += char;
+		index += 1;
+	}
+	return out;
+}
+
+/** Index of the quote that closes an opening quote at index 0, or -1. */
+function findClosingQuote(text: string, quote: string): number {
+	for (let index = 1; index < text.length; index++) {
+		const char = text.charAt(index);
+		if (quote === '"' && char === "\\") {
+			index += 1; // skip the escaped character
+			continue;
+		}
+		if (char === quote) return index;
+	}
+	return -1;
+}
+
+/** Inside double quotes a shell resolves `\"`, `\\`, `\$` and `` \` ``. */
+function unescapeQuotedValue(text: string, quote: string): string {
+	if (quote === "'") return text;
+	return text.replace(/\\(["\\$`])/g, "$1");
+}
 
 /**
  * Parse `export NAME=...` lines out of env file content.
  *
- * Implemented line-by-line: after an exact `export` prefix and whitespace,
- * the value starts at the first `=`, drops one optional opening quote, and
- * ends at the first quote or `#` (inline comment). A line with nothing at
- * all after `=` yields no entry; a value that trims to empty still yields
- * one (the caller's length filter decides).
+ * Implemented line-by-line, and indentation is allowed: an `export TOKEN=…`
+ * indented inside an `if` block in a shell rc file is just as real as an
+ * unindented one. A line with nothing after `=` yields no entry; a value that
+ * reads as empty still yields one (the caller's length filter decides).
+ *
+ * Physical lines ending in `\` are joined first: a continuation inside a
+ * quoted value (`export API_KEY="abc1\` + newline + `def456"`) would
+ * otherwise become the truncated needle `abc1\` and leak the rest.
  */
-export function parseEnvFileSecrets(content: string): Array<{ name: string; value: string }> {
-	const found: Array<{ name: string; value: string }> = [];
-	for (const line of content.split("\n")) {
-		if (!line.startsWith(EXPORT_PREFIX)) continue;
-		const afterKeyword = line.slice(EXPORT_PREFIX.length);
-		if (afterKeyword.length === 0 || !/^\s/.test(afterKeyword)) continue;
+export interface EnvSecretLine {
+	name: string;
+	value: string;
+	/** True for `NAME+=value` (an append, not a definition). */
+	append?: boolean;
+}
 
-		const eqIndex = afterKeyword.indexOf("=");
+export function parseEnvFileSecrets(content: string): EnvSecretLine[] {
+	const found: EnvSecretLine[] = [];
+	for (const rawLine of joinContinuations(splitEnvLines(content))) {
+		const keyword = EXPORT_LINE_RE.exec(rawLine);
+		if (keyword === null) continue;
+
+		const afterKeyword = rawLine.slice(keyword[0].length);
+		const eqIndex = findAssignmentIndex(afterKeyword);
 		if (eqIndex <= 0) continue;
-		const name = afterKeyword.slice(0, eqIndex).trim();
+		// `A+=x` appends to A; the appended text must be redacted too, so the
+		// trailing `+` is dropped from the name and the value read as usual.
+		const rawName = afterKeyword.slice(0, eqIndex).trim();
+		const append = rawName.endsWith("+");
+		const name = append ? rawName.slice(0, -1).trim() : rawName;
 		if (!IDENTIFIER_RE.test(name)) continue;
 
-		let value = afterKeyword.slice(eqIndex + 1);
-		if (value.length === 0) continue; // `export A=` — nothing to redact
-		if (value.startsWith('"') || value.startsWith("'")) value = value.slice(1);
-		const stop = value.search(VALUE_STOP_RE);
-		if (stop >= 0) value = value.slice(0, stop);
-		found.push({ name, value: value.trim() });
+		const raw = afterKeyword.slice(eqIndex + 1);
+		if (raw.length === 0) continue; // `export A=` — nothing to redact
+		const entry: EnvSecretLine = { name, value: readShellValue(raw) };
+		if (append) entry.append = true;
+		found.push(entry);
 	}
 	return found;
+}
+
+/**
+ * Join `\`-continued physical lines into logical ones.
+ *
+ * Shell rules that matter for secret discovery: a COMMENT line is never
+ * continued (so `# note \` must not swallow the `export` on the next line, as
+ * it would leave the real key unscanned), and a backslash inside single quotes
+ * is a literal character, not a continuation.
+ */
+function joinContinuations(lines: readonly string[]): string[] {
+	const joined: string[] = [];
+	let pending: string | null = null;
+	let inSingleQuote = false;
+	for (const line of lines) {
+		if (pending === null && line.trimStart().startsWith("#")) {
+			joined.push(line);
+			continue;
+		}
+		inSingleQuote = advanceSingleQuoteState(line, inSingleQuote);
+		const combined: string = pending === null ? line : `${pending}${line}`;
+		if (!inSingleQuote && /\\$/.test(combined)) {
+			pending = combined.slice(0, -1);
+			continue;
+		}
+		joined.push(combined);
+		pending = null;
+	}
+	if (pending !== null) joined.push(pending);
+	return joined;
+}
+
+/** Track single-quote state across a physical line (outside quotes `\` escapes). */
+function advanceSingleQuoteState(line: string, inSingleQuote: boolean): boolean {
+	for (let index = 0; index < line.length; index++) {
+		const char = line.charAt(index);
+		if (inSingleQuote) {
+			if (char === "'") inSingleQuote = false;
+			continue;
+		}
+		if (char === "\\") {
+			index += 1;
+			continue;
+		}
+		if (char === "'") inSingleQuote = true;
+	}
+	return inSingleQuote;
+}
+
+/**
+ * Index of the `=` that assigns. In an `export`/`declare -x` line the first
+ * `=` always starts the value: bash sets `export A==x` to `=x`, so skipping
+ * `==` (as if it were a comparison) silently dropped the value.
+ * `A+=x` is an append; the caller folds the `+` into the name.
+ */
+function findAssignmentIndex(text: string): number {
+	return text.indexOf("=");
 }
 
 export interface BuildSecretsOptions {
 	/** Env files to scan. Defaults to defaultEnvFiles(). Missing files are ignored. */
 	envFiles?: readonly string[];
-	/** Single env file (legacy shorthand for envFiles: [envFile]). */
-	envFile?: string;
 	/** User-provided --secret inputs: a literal value, or a path to a file of one secret per line. */
 	secretInputs?: readonly string[];
 	/** Base directory for relative env-file / secret-file paths (default: process.cwd()). */
@@ -128,10 +275,35 @@ type Rejection = "too-short" | "placeholder";
 
 function rejectionFor(value: string): Rejection | null {
 	if (value.length < MIN_SECRET_LENGTH) return "too-short";
-	// A value that appears inside the replacement marker would corrupt the
-	// marker itself (and would forever show up as a "residual secret").
-	if (value.includes(PLACEHOLDER_PREFIX) || PLACEHOLDER_PREFIX.includes(value)) return "placeholder";
+	// Only a value that could sit INSIDE a generated marker is refused: replacing
+	// it would corrupt the marker we just wrote (and the value would forever
+	// count as a residual secret). A long secret that merely CONTAINS
+	// `[REDACTED_` is perfectly safe to replace — the matcher never rescans
+	// inserted text — and refusing it used to drop a real secret silently.
+	if (PLACEHOLDER_PREFIX.includes(value)) return "placeholder";
 	return null;
+}
+
+export interface RejectionCounts {
+	tooShort: number;
+	placeholder: number;
+}
+
+function describeRejections(counts: RejectionCounts, source: string): string[] {
+	const notes: string[] = [];
+	if (counts.tooShort > 0) {
+		notes.push(
+			`Ignored ${counts.tooShort} ${source} shorter than ${MIN_SECRET_LENGTH} characters ` +
+				"(they would match unrelated text and destroy the export)",
+		);
+	}
+	if (counts.placeholder > 0) {
+		notes.push(
+			`Ignored ${counts.placeholder} ${source} that match part of the ` +
+				`${PLACEHOLDER_PREFIX}…] marker (they would corrupt the output)`,
+		);
+	}
+	return notes;
 }
 
 /**
@@ -144,8 +316,27 @@ export function buildLiteralSecrets(options: BuildSecretsOptions = {}): BuildSec
 	const warnings: string[] = [];
 	const byName = new Map<string, string>(); // name -> value
 
-	const envFiles = options.envFiles ?? (options.envFile ? [options.envFile] : defaultEnvFiles(home));
-	let tooShortEnv = 0;
+	const envFiles = options.envFiles ?? defaultEnvFiles(home);
+	const envRejections: RejectionCounts = { tooShort: 0, placeholder: 0 };
+	const overridden = new Map<string, string>(); // name -> last file it was seen in
+	// `NAME+=x` is an append: the effective value is previous+x, and the previous
+	// value is still a substring worth redacting, so both are registered.
+	const appended: Array<{ name: string; value: string }> = [];
+	// Values as written, BEFORE the length/marker filters: `export API_KEY=sk`
+	// is rejected as too short, but `API_KEY+=live-1234` still means
+	// `sklive-1234`, and reconstructing it from the accepted values alone lost
+	// the `sk` half of the secret.
+	const rawValues = new Map<string, string>();
+	const previousLabels = new Set<string>();
+	const previousLabel = (name: string): string => {
+		let label = `${name}_PREVIOUS`;
+		let counter = 2;
+		while (previousLabels.has(label) || byName.has(label)) {
+			label = `${name}_PREVIOUS_${counter++}`;
+		}
+		previousLabels.add(label);
+		return label;
+	};
 	for (const rawPath of envFiles) {
 		const path = resolveUserPath(rawPath, cwd, home);
 		if (!existsSync(path)) {
@@ -159,25 +350,57 @@ export function buildLiteralSecrets(options: BuildSecretsOptions = {}): BuildSec
 			warnings.push(`Ignored unreadable env file: ${path}`);
 			continue;
 		}
-		for (const { name, value } of parseEnvFileSecrets(content)) {
+		for (const { name, value, append } of parseEnvFileSecrets(content)) {
 			if (!looksSensitiveName(name)) continue;
-			const rejection = rejectionFor(value);
+			const previousRaw = rawValues.get(name);
+			const effective = append ? `${previousRaw ?? ""}${value}` : value;
+			rawValues.set(name, effective);
+
+			const rejection = rejectionFor(effective);
 			if (rejection === "too-short") {
-				tooShortEnv += 1;
+				envRejections.tooShort += 1;
 				continue;
 			}
-			if (rejection === "placeholder") continue;
+			if (rejection === "placeholder") {
+				envRejections.placeholder += 1;
+				continue;
+			}
+			if (append) {
+				// The base value is still a substring of whatever gets exported.
+				if (previousRaw !== undefined && previousRaw.length > 0 && rejectionFor(previousRaw) === null) {
+					appended.push({ name: previousLabel(name), value: previousRaw });
+				}
+				byName.set(name, effective);
+				continue;
+			}
+			// Later files win (source order), but a variable defined twice with
+			// different values means one of them is stale: say so instead of
+			// silently redacting the wrong needle.
+			if (previousRaw !== undefined && previousRaw !== value) {
+				overridden.set(name, basename(path));
+			}
 			byName.set(name, value);
 		}
 	}
-	if (tooShortEnv > 0) {
-		warnings.push(`Ignored ${tooShortEnv} env value(s) shorter than ${MIN_SECRET_LENGTH} characters`);
+	warnings.push(...describeRejections(envRejections, "env value(s)"));
+	if (overridden.size > 0) {
+		warnings.push(
+			`${overridden.size} variable(s) are defined more than once across the scanned env files ` +
+				`(last one wins, per shell source order): ${[...overridden.keys()].join(", ")}`,
+		);
 	}
 
+	const inputRejections: RejectionCounts = { tooShort: 0, placeholder: 0 };
 	let secretIndex = 1;
-	let tooShortInputs = 0;
 	let fileInputs = 0;
 	let fileLines = 0;
+	// `SECRET_<n>` is a plausible real variable name, so never let a generated
+	// name clobber an env-file entry (that used to drop the env secret silently).
+	const nextSecretName = (): string => {
+		let name = `SECRET_${secretIndex++}`;
+		while (byName.has(name)) name = `SECRET_${secretIndex++}`;
+		return name;
+	};
 	for (const input of options.secretInputs ?? []) {
 		const asPath = resolveUserPath(input, cwd, home);
 		let isFile = false;
@@ -191,7 +414,8 @@ export function buildLiteralSecrets(options: BuildSecretsOptions = {}): BuildSec
 			fileInputs += 1;
 			let lines: string[];
 			try {
-				lines = readFileSync(asPath, "utf-8").split("\n");
+				// BOM-stripped and CRLF/CR aware, like the env files.
+				lines = splitEnvLines(readFileSync(asPath, "utf-8"));
 			} catch {
 				warnings.push(`Ignored unreadable secret file: ${asPath}`);
 				continue;
@@ -199,35 +423,35 @@ export function buildLiteralSecrets(options: BuildSecretsOptions = {}): BuildSec
 			for (const line of lines) {
 				const value = line.trim();
 				if (value.length === 0) continue;
-				if (rejectionFor(value) !== null) {
-					tooShortInputs += 1;
+				const rejection = rejectionFor(value);
+				if (rejection !== null) {
+					inputRejections[rejection === "too-short" ? "tooShort" : "placeholder"] += 1;
 					continue;
 				}
-				byName.set(`SECRET_${secretIndex++}`, value);
+				byName.set(nextSecretName(), value);
 				fileLines += 1;
 			}
 			continue;
 		}
 
 		if (input.length === 0) continue;
-		if (rejectionFor(input) !== null) {
-			tooShortInputs += 1;
+		const rejection = rejectionFor(input);
+		if (rejection !== null) {
+			inputRejections[rejection === "too-short" ? "tooShort" : "placeholder"] += 1;
 			continue;
 		}
-		byName.set(`SECRET_${secretIndex++}`, input);
+		byName.set(nextSecretName(), input);
 	}
-	if (tooShortInputs > 0) {
-		warnings.push(
-			`Ignored ${tooShortInputs} secret value(s) shorter than ${MIN_SECRET_LENGTH} characters ` +
-				"(they would match unrelated text and destroy the export)",
-		);
-	}
+	warnings.push(...describeRejections(inputRejections, "secret value(s)"));
 	if (fileInputs > 0) {
 		warnings.push(`Read ${fileLines} secret(s) from ${fileInputs} file(s)`);
 	}
 
 	const secrets: SecretEntry[] = [];
-	for (const [name, value] of byName) {
+	const values = new Set<string>();
+	for (const [name, value] of [...byName, ...appended.map((entry) => [entry.name, entry.value] as const)]) {
+		if (values.has(value)) continue; // one marker per distinct value
+		values.add(value);
 		secrets.push({ name, value, replacement: `[REDACTED_${name}]` });
 	}
 	// Longest value first: when one secret contains another as a substring,
@@ -240,6 +464,14 @@ function escapeRegExp(literal: string): string {
 	return literal.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+/** The value plus its NFC/NFD forms (normalization must not hide a secret). */
+function valueVariants(value: string): string[] {
+	const forms = new Set<string>([value]);
+	forms.add(value.normalize("NFC"));
+	forms.add(value.normalize("NFD"));
+	return [...forms];
+}
+
 export interface SecretMatcher {
 	/**
 	 * Replace every occurrence in one pass. Because the matcher is a single
@@ -249,14 +481,23 @@ export interface SecretMatcher {
 	replace(text: string, onReplace?: (entry: SecretEntry) => void): string;
 }
 
-/** Build the single-pass literal matcher, or null when there is nothing to replace. */
+/**
+ * Build the single-pass literal matcher, or null when there is nothing to replace.
+ *
+ * Each value is registered in its NFC and NFD forms: a secret typed as `café`
+ * (NFC) would otherwise be invisible in a session that stored the same text
+ * decomposed (NFD) — both the redaction and the residual check would pass.
+ */
 export function createSecretMatcher(secrets: readonly SecretEntry[]): SecretMatcher | null {
 	const usable = secrets.filter((entry) => entry.value.length > 0 && rejectionFor(entry.value) === null);
 	if (usable.length === 0) return null;
 
 	const byValue = new Map<string, SecretEntry>();
 	for (const entry of usable) {
-		if (!byValue.has(entry.value)) byValue.set(entry.value, entry);
+		for (const variant of valueVariants(entry.value)) {
+			if (rejectionFor(variant) !== null) continue;
+			if (!byValue.has(variant)) byValue.set(variant, entry);
+		}
 	}
 	if (byValue.size === 0) return null;
 
@@ -277,19 +518,6 @@ export function createSecretMatcher(secrets: readonly SecretEntry[]): SecretMatc
 			});
 		},
 	};
-}
-
-/** Count non-overlapping occurrences of a literal in a text. */
-export function countOccurrences(text: string, value: string): number {
-	if (!value) return 0;
-	let count = 0;
-	let from = 0;
-	for (;;) {
-		const at = text.indexOf(value, from);
-		if (at < 0) return count;
-		count += 1;
-		from = at + value.length;
-	}
 }
 
 export interface SecretFingerprint {
@@ -320,7 +548,10 @@ export function computeSecretFingerprint(
 	const digest = createHash("sha256");
 	digest.update(FINGERPRINT_VERSION).update("\0");
 	digest.update(salt).update("\0");
-	for (const value of secrets.map((entry) => entry.value).sort()) {
+	// Deduplicated: the fingerprint describes the secret VALUE SET, so the same
+	// value listed under two names must not change the digest.
+	const values = new Set(secrets.map((entry) => entry.value));
+	for (const value of [...values].sort()) {
 		const bytes = Buffer.from(value, "utf8");
 		digest.update(`${bytes.length}:`).update(bytes).update("\n");
 	}
