@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-label="pi-anon-export promo card">
+  <defs>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#7c3aed"/>
+      <stop offset="1" stop-color="#a78bfa"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="1" r="0.9">
+      <stop offset="0" stop-color="#7c3aed" stop-opacity="0.30"/>
+      <stop offset="0.6" stop-color="#7c3aed" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#7c3aed" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="50" height="50" patternUnits="userSpaceOnUse">
+      <path d="M50 0H0v50" fill="none" stroke="#ffffff" stroke-opacity="0.05" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="1600" height="1000" fill="#0d0d12"/>
+  <rect width="1600" height="1000" fill="url(#grid)"/>
+  <rect width="1600" height="1000" fill="url(#glow)"/>
+
+  <!-- corner labels -->
+  <rect x="160" y="92" rx="8" width="330" height="56" fill="#7c3aed" fill-opacity="0.18" stroke="#7c3aed"/>
+  <text x="325" y="130" text-anchor="middle" font-family="ui-monospace, Menlo, monospace" font-size="30" fill="#c4b5fd">pi extension</text>
+  <text x="1440" y="130" text-anchor="end" font-family="ui-monospace, Menlo, monospace" font-size="30" fill="#8b8b9e">pi.dev/packages</text>
+
+  <!-- name -->
+  <text x="800" y="332" text-anchor="middle" font-family="ui-monospace, Menlo, monospace" font-size="118" font-weight="700" fill="#ffffff">pi-anon-export</text>
+
+  <!-- tagline -->
+  <text x="800" y="418" text-anchor="middle" font-family="system-ui, sans-serif" font-size="46" fill="#c9c9d4">Share agent sessions. Never your secrets.</text>
+
+  <!-- before / after -->
+  <rect x="160" y="480" rx="16" width="620" height="250" fill="#14141b" stroke="#3a2a44" stroke-width="2"/>
+  <text x="192" y="526" font-family="ui-monospace, Menlo, monospace" font-size="26" fill="#f87171">before</text>
+  <text x="192" y="586" font-family="ui-monospace, Menlo, monospace" font-size="28" fill="#e6e6ef">ghp_9f3Kd2pQ7xLm0RtY</text>
+  <text x="192" y="634" font-family="ui-monospace, Menlo, monospace" font-size="28" fill="#e6e6ef">bob@corp.io</text>
+  <text x="192" y="682" font-family="ui-monospace, Menlo, monospace" font-size="28" fill="#e6e6ef">/Users/alice/.ssh</text>
+
+  <rect x="820" y="480" rx="16" width="620" height="250" fill="#101a16" stroke="#1f4438" stroke-width="2"/>
+  <text x="852" y="526" font-family="ui-monospace, Menlo, monospace" font-size="26" fill="#4ade80">after</text>
+  <text x="852" y="586" font-family="ui-monospace, Menlo, monospace" font-size="28" fill="#a7f3d0">[REDACTED_GITHUB_TOKEN]</text>
+  <text x="852" y="634" font-family="ui-monospace, Menlo, monospace" font-size="28" fill="#a7f3d0">redacted-8c1f4a2b@example.com</text>
+  <text x="852" y="682" font-family="ui-monospace, Menlo, monospace" font-size="28" fill="#a7f3d0">/Users/user_3f9a1c2d/.ssh</text>
+
+  <!-- install pill -->
+  <rect x="420" y="786" rx="14" width="760" height="96" fill="#16161d" stroke="url(#accent)" stroke-width="3"/>
+  <text x="800" y="848" text-anchor="middle" font-family="ui-monospace, Menlo, monospace" font-size="40" fill="#a78bfa">$ pi install npm:pi-anon-export</text>
+
+  <!-- accent bar -->
+  <rect x="420" y="912" width="760" height="10" rx="5" fill="url(#accent)"/>
+</svg>

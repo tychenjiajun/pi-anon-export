@@ -2,12 +2,12 @@
   "name": "pi-anon-export",
   "version": "0.1.0",
   "type": "module",
-  "description": "Pi extension that exports sessions as anonymized JSONL: redacts literal secrets pulled from your env files, strips or flags embedded images, drops unparseable lines, and optionally zips every session of the current project. Fully offline — nothing ever leaves your machine.",
+  "description": "Pi extension that exports agent sessions as anonymized JSONL: redacts secrets from your shell rc files, strips or flags screenshots, verifies the result, zips a whole project. Fully offline.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/tychenjiajun/pi-anon-export.git"
   },
-  "homepage": "https://github.com/tychenjiajun/pi-anon-export#readme",
+  "homepage": "https://pi.dev/packages/pi-anon-export",
   "bugs": {
     "url": "https://github.com/tychenjiajun/pi-anon-export/issues"
   },
@@ -16,15 +16,20 @@
     "pi-package",
     "pi-extension",
     "anonymize",
+    "redact",
     "redaction",
+    "secrets",
+    "pii",
     "privacy",
+    "screenshot",
     "session",
     "jsonl",
     "export",
+    "zip",
     "offline",
+    "share",
     "pi",
-    "pi-coding-agent",
-    "ai-coding"
+    "pi-coding-agent"
   ],
   "license": "MIT AND Apache-2.0",
   "engines": {
@@ -39,7 +44,9 @@
   "pi": {
     "extensions": [
       "./extensions/anon-export.ts"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/tychenjiajun/pi-anon-export/main/assets/preview.png",
+    "video": "https://raw.githubusercontent.com/tychenjiajun/pi-anon-export/main/assets/demo.mp4"
   },
   "scripts": {
     "check": "tsc --noEmit",

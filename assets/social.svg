@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-label="pi-anon-export social preview">
+  <defs>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#7c3aed"/>
+      <stop offset="1" stop-color="#a78bfa"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="1" r="0.9">
+      <stop offset="0" stop-color="#7c3aed" stop-opacity="0.32"/>
+      <stop offset="0.6" stop-color="#7c3aed" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#7c3aed" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0v40" fill="none" stroke="#ffffff" stroke-opacity="0.05" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="1200" height="630" fill="#0d0d12"/>
+  <rect width="1200" height="630" fill="url(#grid)"/>
+  <rect width="1200" height="630" fill="url(#glow)"/>
+
+  <rect x="90" y="70" rx="8" width="300" height="48" fill="#7c3aed" fill-opacity="0.18" stroke="#7c3aed"/>
+  <text x="240" y="103" text-anchor="middle" font-family="ui-monospace, Menlo, monospace" font-size="26" fill="#c4b5fd">pi extension</text>
+
+  <text x="90" y="250" font-family="ui-monospace, Menlo, monospace" font-size="82" font-weight="700" fill="#ffffff">pi-anon-export</text>
+  <text x="90" y="316" font-family="system-ui, sans-serif" font-size="34" fill="#c9c9d4">Export agent sessions as anonymized JSONL.</text>
+  <text x="90" y="362" font-family="system-ui, sans-serif" font-size="34" fill="#8b8b9e">Secrets redacted, images stripped, output verified.</text>
+
+  <rect x="90" y="410" rx="12" width="712" height="76" fill="#16161d" stroke="url(#accent)" stroke-width="3"/>
+  <text x="120" y="460" font-family="ui-monospace, Menlo, monospace" font-size="32" fill="#a78bfa">$ pi install npm:pi-anon-export</text>
+
+  <text x="90" y="556" font-family="ui-monospace, Menlo, monospace" font-size="26" fill="#6b6b7e">offline - no network - zip + manifest.json - MIT</text>
+
+  <rect x="90" y="586" width="1020" height="8" rx="4" fill="url(#accent)"/>
+</svg>

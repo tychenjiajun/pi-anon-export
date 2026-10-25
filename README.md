@@ -1,6 +1,13 @@
 # pi-anon-export
 
-A [pi](https://pi.dev) extension that exports your agent sessions as **anonymized JSONL** — locally, with nothing ever leaving your machine. Use it when you want to share a session transcript (for a bug report, a colleague, or a public gist) without leaking API keys, tokens, cookies, emails, or embedded screenshots.
+[![npm version](https://img.shields.io/npm/v/pi-anon-export?color=7c3aed)](https://www.npmjs.com/package/pi-anon-export)
+[![npm downloads](https://img.shields.io/npm/dm/pi-anon-export)](https://www.npmjs.com/package/pi-anon-export)
+[![license](https://img.shields.io/badge/license-MIT%20%2B%20Apache--2.0-blue)](LICENSE)
+[![pi extension](https://img.shields.io/badge/pi-extension-7c3aed)](https://pi.dev/packages/pi-anon-export)
+
+**A [pi](https://pi.dev) extension that exports your agent sessions as anonymized JSONL** — locally, with nothing ever leaving your machine. Use it when you want to share a session transcript (for a bug report, a colleague, or a public gist) without leaking API keys, tokens, cookies, emails, or embedded screenshots.
+
+![pi-anon-export: a session file before and after redaction](https://raw.githubusercontent.com/tychenjiajun/pi-anon-export/main/assets/preview.png)
 
 ## Install
 
@@ -21,6 +28,8 @@ pi -e npm:pi-anon-export
 /anon-export zip        export ALL sessions of the current working directory's
                         session folder, redacted and packed into one zip
 ```
+
+![demo: session file → redact → after → verify](https://raw.githubusercontent.com/tychenjiajun/pi-anon-export/main/assets/demo.gif)
 
 ### Flags (both modes)
 
@@ -99,6 +108,40 @@ Known by-design behaviors (all documented in `extensions/lib/anonymize.ts`):
 - Code comparisons (`password == "secret"`, `api_secret=>x`) are not assignments, so the right-hand literal is not redacted; YAML/INI comment values (`password: # TODO`) are left intact.
 - A backslash-continued line is joined the way a shell joins it (never inside a comment or single quotes); `declare -x`/`export` are supported, `typeset` is not.
 
+## FAQ
+
+### Does anything leave my machine?
+
+No. The extension performs **no network I/O at all** — no telemetry, no uploads, no model calls. It reads session and env files, writes the export, and stops.
+
+### How is this different from copying the JSONL out of the session directory?
+
+`~/.pi/sessions/--<path>--/*.jsonl` contains everything your agent ever saw: shell rc secrets, employee emails, home paths, base64 screenshots. `/anon-export` re-writes it leaf by leaf (secrets → `[REDACTED_<NAME>]`, emails → `redacted-<hash8>@example.com`, home paths → `user_<hash8>`), drops unparseable lines, and then re-scans the result for every known secret before it hands you a shareable name.
+
+### What happens if redaction fails?
+
+The file is not written under its normal name: it becomes `<session>.jsonl.UNSAFE` (or `pi-anon-export-<timestamp>-UNSAFE.zip`) and an unattended run exits non-zero. A script cannot mistake a leaky export for a clean one.
+
+### Which secrets does it find?
+
+Literal values of `export NAME=value` lines whose name contains `KEY`, `TOKEN`, `SECRET`, `PASS`, `PWD`, `COOKIE` or `CREDENTIAL`, from `~/.zshenv`, `~/.zprofile`, `~/.zshrc`, `~/.zlogin`, `~/.bash_profile`, `~/.bashrc`, `~/.profile` — or from files you pass with `--env-file`. On top of that the `full` level recognises common credential shapes (API keys, JWTs, bearer tokens, credential URLs, private-key blocks) and PII (emails, SSN/phone/IP, home paths); `--pii aggressive` adds personal names and street addresses. Project `.env` files, `~/.aws/credentials`, `~/.npmrc` and `~/.netrc` are **not** read unless you point `--env-file` at them.
+
+### Does it work with screenshots and images?
+
+Images are kept **byte-exact** by default and counted for review, because any rewrite corrupts them. Pass `--no-images` to replace every recognised media payload with `[IMAGE_REMOVED]`. Text-based media types (`image/svg+xml`, `text/*`, `*json`) are always treated as text and redacted.
+
+### Can I share the zip safely?
+
+The zip carries a `manifest.json` with a sha256 per file, the per-file redaction counts, and `verification.residualSecrets` (must be `0`). Skipped-file entries are sanitized to basenames, so the manifest does not reintroduce your home directory or project path. Still read the export before publishing it — anonymization is best-effort, not a guarantee.
+
+### Why does the export directory warn me about git?
+
+Zip mode writes into the current directory by default. If that directory is a git working tree the report says so, because committing a transcript is one `git add -A` away; add the archive (or the export directory) to `.gitignore`.
+
+### Does it support very large sessions?
+
+Yes. There is **no size cutoff**: a megabyte-sized tool output gets the same passes, and the guards stay linear per match (a 1 MiB git log full of addresses takes ~0.1 s). Zip mode streams each session into the archive as it is redacted instead of buffering the whole redacted set.
+
 ## Privacy: fully local
 
 This extension performs **no network I/O at all**. It reads your session files and env files, writes results under the output directory, and does nothing else. No telemetry, no uploads, no model calls. The only runtime dependency is [`fflate`](https://github.com/101arrowz/fflate) (pure-JS zip), used locally in zip mode.
@@ -139,6 +182,13 @@ pnpm test        # check + smoke
 ```
 
 The smoke tests are hermetic: `--env-file` points at `fixtures/`, and every export goes to a temp directory, so your real `~/.zshrc` and sessions are never read.
+
+## Links
+
+- Package page: <https://pi.dev/packages/pi-anon-export>
+- pi packages documentation: <https://pi.dev/docs/latest/packages>
+- Issues and bug reports: <https://github.com/tychenjiajun/pi-anon-export/issues>
+- The upstream anonymizer this ports: <https://github.com/TeichAI/teich>
 
 ## License
 

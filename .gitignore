@@ -3,3 +3,4 @@ dist/
 *.tsbuildinfo
 pi-anon-export-*
 .DS_Store
+frames/png/

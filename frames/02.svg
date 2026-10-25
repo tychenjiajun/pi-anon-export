@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" role="img" aria-label="redact: /anon-export zip">
+  <rect width="1280" height="800" fill="#0d0d12"/>
+
+  <rect x="48" y="40" rx="8" width="300" height="52" fill="#7c3aed" fill-opacity="0.18" stroke="#7c3aed"/>
+  <text x="198" y="76" text-anchor="middle" font-family="ui-monospace, Menlo, monospace" font-size="28" fill="#c4b5fd">2. REDACT</text>
+  <text x="1232" y="76" text-anchor="end" font-family="ui-monospace, Menlo, monospace" font-size="24" fill="#8b8b9e">pi-anon-export</text>
+
+  <rect x="48" y="128" rx="16" width="1184" height="560" fill="#101017" stroke="#26262f" stroke-width="2"/>
+  <rect x="48" y="128" rx="16" width="1184" height="64" fill="#16161d"/>
+  <circle cx="92" cy="160" r="10" fill="#ff5f57"/>
+  <circle cx="124" cy="160" r="10" fill="#febc2e"/>
+  <circle cx="156" cy="160" r="10" fill="#28c840"/>
+  <text x="640" y="170" text-anchor="middle" font-family="ui-monospace, Menlo, monospace" font-size="24" fill="#8b8b9e">pi</text>
+
+  <text x="96" y="264" font-family="ui-monospace, Menlo, monospace" font-size="24" fill="#e6e6ef">
+    <tspan x="96" dy="0" fill="#a78bfa">$ /anon-export zip</tspan>
+    <tspan x="96" dy="1.5em">secrets    read ~/.zshenv ~/.zprofile ~/.zshrc</tspan>
+    <tspan x="96" dy="1.5em" fill="#8b8b9e">           14 literals, shell order, quotes honored</tspan>
+    <tspan x="96" dy="1.5em">pipeline   parse-or-drop -&gt; media -&gt; literals -&gt; names</tspan>
+    <tspan x="96" dy="1.5em" fill="#8b8b9e">           no size cutoff, chunked above 1 MiB</tspan>
+    <tspan x="96" dy="1.5em">output     pi-anon-export-2026-03-11T09-14-22.zip</tspan>
+    <tspan x="96" dy="1.5em" fill="#8b8b9e">           streamed entry by entry, 0600, .part then rename</tspan>
+  </text>
+  <text x="96" y="652" font-family="ui-monospace, Menlo, monospace" font-size="22" fill="#5b5b70">nothing leaves the machine: no network I/O, no model calls, ever</text>
+</svg>

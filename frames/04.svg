@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800" role="img" aria-label="verify: the report, then install">
+  <rect width="1280" height="800" fill="#0d0d12"/>
+
+  <rect x="48" y="40" rx="8" width="300" height="52" fill="#7c3aed" fill-opacity="0.18" stroke="#7c3aed"/>
+  <text x="198" y="76" text-anchor="middle" font-family="ui-monospace, Menlo, monospace" font-size="28" fill="#c4b5fd">4. VERIFY</text>
+  <text x="1232" y="76" text-anchor="end" font-family="ui-monospace, Menlo, monospace" font-size="24" fill="#8b8b9e">pi-anon-export</text>
+
+  <rect x="48" y="128" rx="16" width="1184" height="560" fill="#101017" stroke="#26262f" stroke-width="2"/>
+  <rect x="48" y="128" rx="16" width="1184" height="64" fill="#16161d"/>
+  <circle cx="92" cy="160" r="10" fill="#ff5f57"/>
+  <circle cx="124" cy="160" r="10" fill="#febc2e"/>
+  <circle cx="156" cy="160" r="10" fill="#28c840"/>
+  <text x="640" y="170" text-anchor="middle" font-family="ui-monospace, Menlo, monospace" font-size="24" fill="#8b8b9e">report (stderr in print mode)</text>
+
+  <text x="96" y="264" font-family="ui-monospace, Menlo, monospace" font-size="24" fill="#e6e6ef">
+    <tspan x="96" dy="0" fill="#4ade80">[ok] Verified: no known secret literal remains.</tspan>
+    <tspan x="96" dy="1.5em" fill="#4ade80">[ok] 12 sessions exported, 0 unparseable lines.</tspan>
+    <tspan x="96" dy="1.5em" fill="#fbbf24">[!!] Images kept and flagged for review (--no-images).</tspan>
+    <tspan x="96" dy="1.5em" fill="#4ade80">[ok] A leaky file becomes *.UNSAFE and the run exits 1.</tspan>
+    <tspan x="96" dy="1.5em" fill="#4ade80">[ok] manifest.json: sha256 per file, salted fingerprint.</tspan>
+    <tspan x="96" dy="1.5em"> </tspan>
+    <tspan x="96" dy="1.5em" fill="#a78bfa">$ pi install npm:pi-anon-export</tspan>
+    <tspan x="96" dy="1.5em" fill="#8b8b9e">pi.dev/packages/pi-anon-export</tspan>
+  </text>
+  <text x="96" y="652" font-family="ui-monospace, Menlo, monospace" font-size="22" fill="#5b5b70">MIT - fflate is the only dependency - pi is a peer dependency</text>
+</svg>
