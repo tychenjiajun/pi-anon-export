@@ -1,6 +1,6 @@
 {
   "name": "pi-anon-export",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "Pi extension that exports agent sessions as anonymized JSONL or HTML, matching /export's paths and formats: redacts secrets from your shell rc files, strips or flags screenshots, verifies the result, zips a whole project. Fully offline.",
   "repository": {
